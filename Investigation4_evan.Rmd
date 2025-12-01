@@ -4,6 +4,9 @@ author: "Evan_Alanen"
 date: "2025-11-30"
 output: pdf_document
 ---
+```{r}
+## idkkkk
+```
 
 
 ```{r}
