@@ -1,0 +1,197 @@
+---
+title: "Final Project Part 2"
+output: html_document
+date: "2025-11-29"
+---
+
+---
+title: "BMEG310 BRCA Report II"
+author: "Group 5: Calla Stanley, Hemanya Sharma, Evan Alanen, Nikki Comfort"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library("TCGAbiolinks")
+library("SummarizedExperiment")
+library(survival)
+library(survminer)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(pheatmap)
+library(reshape2)
+library(devtools)
+library(remotes)
+library(ggbiplot)
+library(org.Hs.eg.db)
+
+# add any other libraries used
+```
+
+```{r}
+clinical <- read.csv("data_clinical_patient.txt", sep = "\t", header = TRUE, skip = 4)
+mutations <- read.csv("data_mutations.txt", sep = "\t", header = TRUE)
+rnaseq <- read.csv("RNAseq_BLCA.csv", header = TRUE)
+
+```
+
+
+# Investigation 1: Survival of Mestastasis in RNA (Calla)
+```{r Investigation 1}
+gene_ids <- rnaseq[[1]]
+expr_mat <- as.matrix(rnaseq[, -1])
+rownames(expr_mat) <- gene_ids
+
+gene_vars <- rowVars(expr_mat, na.rm = TRUE)
+top_n <- 1000  # adjust if desired
+top_genes <- names(sort(gene_vars, decreasing = TRUE))[1:top_n]
+expr_top <- expr_mat[top_genes, , drop = FALSE]
+
+expr_log <- log2(expr_top + 1)              # log transform
+expr_scaled <- t(scale(t(expr_log)))        # Z-score per gene
+
+## Ask if we find unique patients or use all of the info
+sample_ids  <- colnames(expr_scaled)
+patient_ids <- substr(sample_ids, 1, 12)
+unique_patients <- unique(patient_ids)
+
+expr_patient <- sapply(unique_patients, function(pid){
+  cols <- which(patient_ids == pid)
+  if (length(cols) == 1) {
+    expr_scaled[, cols]
+  } else {
+    rowMeans(expr_scaled[, cols, drop = FALSE])
+  }
+})
+
+expr_patient <- as.matrix(expr_patient)
+colnames(expr_patient) <- unique_patients
+
+dist_pat <- dist(t(expr_patient), method = "euclidean")
+hc <- hclust(dist_pat, method = "ward.D2")
+
+k <- 4   # try more later
+clusters <- cutree(hc, k = k)
+
+cluster_df <- data.frame(
+  patient_id = names(clusters),
+  rna_cluster = factor(clusters)
+)
+
+plot(hc, labels = FALSE,
+     main = sprintf("Hierarchical Clustering of Patients (k=%d)", k),
+     xlab = "", sub = "")
+
+annotation <- data.frame(Cluster = factor(clusters))
+rownames(annotation) <- names(clusters)
+
+pheatmap(expr_patient,
+         show_rownames = FALSE,
+         show_colnames = FALSE,
+         annotation_col = annotation,
+         clustering_method = "ward.D2",
+         main = "Top 1000 Most Variable Genes")
+
+head(cluster_df)
+cat("Clusters created:", length(unique(cluster_df$rna_cluster)), "\n")
+cat("Patients clustered:", ncol(expr_patient), "\n")
+```
+```{r Investigation 1 Continued }
+# Remove version numbers from rownames of expr_patient
+rownames(expr_patient) <- gsub("\\..*$", "", rownames(expr_patient))
+
+# Convert Ensembl to gene symbols
+gene_symbols <- mapIds(org.Hs.eg.db,
+                       keys = rownames(expr_patient),
+                       column = "SYMBOL",
+                       keytype = "ENSEMBL",
+                       multiVals = "first")
+
+# Replace rownames with gene symbols where available
+rownames(expr_patient) <- ifelse(is.na(gene_symbols),
+                                 rownames(expr_patient),
+                                 gene_symbols)
+
+pvals <- apply(expr_patient, 1, function(g){
+  fit <- aov(g ~ cluster_df$rna_cluster)
+  summary(fit)[[1]][["Pr(>F)"]][1]
+})
+
+ordered_genes <- names(sort(pvals))
+
+top_markers_list <- list()
+
+for (cl in levels(cluster_df$rna_cluster)) {
+  cl_genes <- sapply(ordered_genes, function(g) {
+    means <- tapply(expr_patient[g,], cluster_df$rna_cluster, mean)
+    names(which.max(means))
+  })
+  top_markers_list[[cl]] <- ordered_genes[which(cl_genes == cl)][1:10]
+}
+
+# Unique set
+top_markers_clean <- unique(unlist(top_markers_list))
+top_markers_clean <- na.omit(top_markers_clean)
+
+marker_expr <- expr_patient[top_markers_clean, ]
+
+ann_col <- data.frame(Cluster = cluster_df$rna_cluster)
+rownames(ann_col) <- cluster_df$patient_id
+
+pheatmap(marker_expr,
+         scale = "row",
+         clustering_method = "ward.D2",
+         annotation_col = ann_col,
+         fontsize_row = 7,
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         main = "Top Marker Genes per RNA Cluster")
+```
+```{r}
+macrophage_genes <- c("SPP1")
+
+spp1_expr <- expr_patient[genes_present, , drop = FALSE]
+
+spp1_df <- data.frame(t(spp1_expr))
+spp1_df$cluster <- cluster_df$rna_cluster
+
+cluster_spp1_means <- spp1_df %>%
+  group_by(cluster) %>%
+  summarise(SPP1 = mean(SPP1, na.rm = TRUE))
+
+cluster_spp1_means
+```
+```{r}
+cluster_df$patient_id <- substr(cluster_df$patient_id, 1, 12)
+cluster_df$patient_id <- gsub("\\.", "-", cluster_df$patient_id)
+
+clinical$OS_EVENT <- ifelse(
+  grepl("^1", clinical$OS_STATUS), 1, 0
+)
+
+clinical$OS_MONTHS <- as.numeric(clinical$OS_MONTHS)
+
+surv_df <- clinical %>%
+  inner_join(cluster_df, by = "patient_id")
+
+nrow(surv_df)
+fit <- survfit(Surv(OS_MONTHS, OS_EVENT) ~ rna_cluster, data = surv_df)
+
+ggsurvplot(
+  fit,
+  data = surv_df,
+  pval = TRUE,
+  risk.table = TRUE,
+  risk.table.height = 0.35,
+  xlab = "Overall Survival (Months)",
+  ylab = "Survival Probability",
+  legend.title = "RNA Cluster",
+  palette = "Dark2",
+  title = "Overall Survival by RNA Expression Clusters"
+)
+```
+
+
+
