@@ -1,0 +1,577 @@
+---
+title: "Investigation_4_evan"
+author: "Evan_Alanen"
+date: "2025-11-30"
+output: pdf_document
+---
+```{r}
+## idkkkk
+```
+
+
+```{r}
+
+clinical.data <- read.delim("data_clinical_patient.txt", header = TRUE, skip = 4)
+mutations.data <- read.delim("data_mutations.txt", header = TRUE)
+#RNAseq_BRCA <- read.delim("RNAseq_BRCA.csv", sep = ",")
+RNAseq_BRCA.data <- read.csv("RNAseq_BRCA.csv")
+
+```
+
+Data cleaning (lab 9)
+- This code creates mutated versions of the original dataset,
+only keeping the values which exist in all three datasets
+```{r}
+
+RNAseq_BRCA.data.mut <- RNAseq_BRCA.data
+mutations.data.mut <- mutations.data
+
+rownames(RNAseq_BRCA.data.mut) <- RNAseq_BRCA.data$X
+
+u1 <- unique(clinical.data$PATIENT_ID)
+
+mutations.data.mut$Tumor_Sample_Barcode <- substr(mutations.data.mut$Tumor_Sample_Barcode, start = 1, stop = 12)
+
+u2 <- unique(mutations.data.mut$Tumor_Sample_Barcode)
+
+
+#length(u1) #n. of unique values in 
+           #clinical.data$PATIENT_ID
+#length(u1) / length(clinical.data$PATIENT_ID)
+
+#length(u2) #n. of unique values in 
+           #data_mutations$Tumor_Sample_Barcode
+#length(u2) / length(data_mutations$Tumor_Sample_Barcode)
+
+RNAseq_BRCA.data.mut <- RNAseq_BRCA.data.mut[2:length(RNAseq_BRCA.data.mut)]
+
+colnames(RNAseq_BRCA.data.mut) <- substr(colnames(RNAseq_BRCA.data.mut), start = 1, stop = 12)
+
+colnames(RNAseq_BRCA.data.mut) <- gsub("[$.]", "-", colnames(RNAseq_BRCA.data.mut))
+
+
+
+u3 <- unique(substr(colnames(RNAseq_BRCA.data.mut), start = 1, stop = 12))
+
+#u3 has an extra trash value "X" at the start
+
+#length(u3) #n. of unique values in
+           #RNAseq_BRCA
+#length(u3) / length(colnames(RNAseq_BRCA))
+
+
+#we will try to replicate the formatting of u1 in u2 and u3
+
+
+
+
+u12 <- intersect(u1, u2)
+u123 <- intersect(u3, u12)
+#u123 is our vector which contains unique patient IDs that appear in u1, u2 and u3
+
+
+############################
+
+
+#now that everything has been formatted properly 
+#we can find the intersection of the datasets with the unique 
+#identifiers, i.e., only keep the values when a identifier
+#appears in all 3 datasets
+
+#length(clinical.data$PATIENT_ID)
+clinical.data.mut <- clinical.data[clinical.data$PATIENT_ID %in% u123,]
+#length(clinical.data.mut$PATIENT_ID)
+
+#length(colnames(RNAseq_BRCA.data.mut))
+RNAseq_BRCA.data.mut <- RNAseq_BRCA.data.mut[,colnames(RNAseq_BRCA.data.mut) %in% u123]
+#length(colnames(RNAseq_BRCA.data.mut))
+
+#length(mutations.data.mut$Tumor_Sample_Barcode)
+mutations.data.mut <- mutations.data.mut[mutations.data.mut$Tumor_Sample_Barcode %in% u123,]
+#length(mutations.data.mut$Tumor_Sample_Barcode)
+
+####Output: we see values being erased from clinical.data and data_mutations
+# [1] 1084
+# [1] 1006
+# [1] 1231
+# [1] 1231
+# [1] 130495
+# [1] 130300
+
+```
+
+```{r}
+
+df <- data.frame(PATIENT_ID = clinical.data.mut$PATIENT_ID, SUBTYPE = clinical.data.mut$SUBTYPE)
+
+mutations.data.mut$SUBTYPE <- ""
+
+df_temp <- df[df$SUBTYPE == "BRCA_LumA", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumA"
+
+df_temp <- df[df$SUBTYPE == "BRCA_LumB", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumB"
+
+df_temp <- df[df$SUBTYPE == "BRCA_Her2", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Her2"
+
+df_temp <- df[df$SUBTYPE == "BRCA_Normal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Normal"
+
+df_temp <- df[df$SUBTYPE == "BRCA_Basal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Basal"
+
+df_temp <- df[df$SUBTYPE == "", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- ""
+
+
+mutations.data.mut$Hugo_Symbol[mutations.data.mut$Hugo_Symbol == "MKI67"]
+library(stringr)
+library(ggplot2)
+
+counter <- data.frame(Hugo_Symbol = mutations.data.mut$Hugo_Symbol, SUBTYPE = mutations.data.mut$SUBTYPE)
+
+counter$SUBTYPE <- str_sub(counter$SUBTYPE, 6, -1)
+counter <- counter[counter$SUBTYPE != "",]
+
+table(counter$SUBTYPE)
+
+sBasal <- 1/0.2062
+sLumA <- 1/0.4351
+sLumB <- 1/0.1797
+sHer2 <- 1/0.1541
+sNormal <- 1/0.0249
+
+counter_table <- as.data.frame(table(counter[counter$Hugo_Symbol == "MKI67",]))
+counter_table$Freq <- counter_table$Freq*c(sBasal, sHer2, sLumA, sLumB, sNormal)
+pMKI67 <- ggplot(counter_table, aes(x = SUBTYPE, y = Freq)) + geom_col(position = "dodge", fill = "chartreuse1") + labs(title = "MKI67 (Ki67)") + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+
+counter_table <- as.data.frame(table(counter[counter$Hugo_Symbol == "ERBB2",]))
+counter_table$Freq <- counter_table$Freq*c(sBasal, sHer2, sLumA, sLumB, sNormal)
+pERBB2 <- ggplot(counter_table, aes(x = SUBTYPE, y = Freq)) + geom_col(position = "dodge", fill = "green4") + labs(title = "ERBB2 (Her2)") + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+
+counter_table <- as.data.frame(table(counter[counter$Hugo_Symbol == "ESR1",]))
+counter_table$Freq <- counter_table$Freq*c(sBasal, sHer2, sLumA, sLumB)
+pESR1 <- ggplot(counter_table, aes(x = SUBTYPE, y = Freq)) + geom_col(position = "dodge", fill = "deeppink1") + labs(title = "ESR1 (ER)") + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+
+counter_table <- as.data.frame(table(counter[counter$Hugo_Symbol == "PGR",]))
+counter_table$Freq <- counter_table$Freq*c(sBasal, sLumA, sLumB)
+pPGR <- ggplot(counter_table, aes(x = SUBTYPE, y = Freq)) + geom_col(position = "dodge", fill = "red3") + labs(title = "PGR (PR)") + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+
+library(patchwork)
+
+(pESR1 + pPGR)/(pMKI67 + pERBB2)
+
+```
+
+
+
+############ Lab 10 Investigation ############
+
+
+```{r}
+##
+###### params:
+
+a <- 5000 #1 to 60660, n. of genes
+sizea <- FALSE #do we restrict n. of genes? yes = TRUE, no = FALSE
+b <- 500 #1 to 1006, n. of cases
+sizeb <- FALSE #do we restrict n. of patients? yes = TRUE, no = FALSE
+gene <- "Basal" 
+geneselect <- TRUE #do we want to select a singular gene or not?
+
+######
+##
+
+
+mutations.data.mut$SUBTYPE <- ""
+
+df_temp <- df[df$SUBTYPE == "BRCA_LumA", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumA"
+
+df_temp <- df[df$SUBTYPE == "BRCA_LumB", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumB"
+
+df_temp <- df[df$SUBTYPE == "BRCA_Her2", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Her2"
+
+df_temp <- df[df$SUBTYPE == "BRCA_Normal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Normal"
+
+df_temp <- df[df$SUBTYPE == "BRCA_Basal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Basal"
+
+df_temp <- df[df$SUBTYPE == "", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- ""
+
+counter <- data.frame(SUBTYPE = mutations.data.mut$SUBTYPE, Tumor_Sample_Barcode = mutations.data.mut$Tumor_Sample_Barcode)
+
+counter$SUBTYPE <- str_sub(counter$SUBTYPE, 6, -1)
+
+#df$SUBTYPE <- str_sub(df$SUBTYPE, 6, -1)
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut
+
+rown <- data.frame(Hugo_Symbol = mutations.data.mut$Hugo_Symbol, Transcript_ID = mutations.data.mut$Transcript_ID)
+length(unique(rown$Hugo_Symbol))
+length(unique(rown$Transcript_ID))
+
+#df <- df[(df$SUBTYPE != "") & !is.na(df$SUBTYPE),]
+
+counter <- counter[counter$Tumor_Sample_Barcode %in% unique(colnames(RNAseq_BRCA.data.mut2)),]
+counter <- unique(counter)
+
+#counter <- counter[(counter$SUBTYPE != "") & !is.na(counter$SUBTYPE),]
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,colnames(RNAseq_BRCA.data.mut2) %in% counter$Tumor_Sample_Barcode]
+
+
+colData_pre <- data.frame(condition = counter$SUBTYPE)
+rownames(colData_pre) <- counter$Tumor_Sample_Barcode
+
+
+length(unique(colnames(RNAseq_BRCA.data.mut)))
+length(colnames(RNAseq_BRCA.data.mut))
+
+
+#################### PART 2
+
+
+
+
+
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut[,colnames(RNAseq_BRCA.data.mut) %in% counter$Tumor_Sample_Barcode]
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,!duplicated(colnames(RNAseq_BRCA.data.mut2))]
+#RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,order(rownames(colData_pre))]
+
+#colData_pre <- data.frame(names = rownames(colData_pre), condition = colData_pre$condition)
+#rownames(colData_pre) <- colData_pre$names
+
+
+
+
+reference_order <- rownames(colData_pre)
+
+ordered_matrix <- RNAseq_BRCA.data.mut2[, match(reference_order, colnames(RNAseq_BRCA.data.mut2))]
+colnames(ordered_matrix) <- reference_order # Assign the reference names to the result
+
+print("Matrix 2 reordered to match Matrix 1's columns:")
+#print(ordered_matrix)
+# Notice that columns C and B are filled with NA because they were missing in the original matrix
+
+temp_colData <- as.data.frame(t(data.frame(condition = colData_pre)))
+colnames(temp_colData) <- rownames(colData_pre)
+
+sum(colnames(temp_colData) == colnames(ordered_matrix))
+
+#ordered_matrix <- rbind(temp_colData, ordered_matrix)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#filtering our matrix FOR OUR SUBTYPE OF CHOICE!!!!!!!!!
+if(geneselect){
+ordered_matrix <- ordered_matrix[,colData_pre$condition != "" & !is.na(colData_pre$condition) & ((colData_pre$condition == "Normal")
+                  | (colData_pre$condition == gene))]
+                  #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  #LEVER OF SYSTEM
+
+names <- rownames(colData_pre)
+boolvec <- (colData_pre$condition != "" & !is.na(colData_pre$condition) & ((colData_pre$condition == "Normal") 
+                  | (colData_pre$condition == gene)))
+                  #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  #LEVER OF SYSTEM
+
+colData_pre <- colData_pre[colData_pre$condition != "" & !is.na(colData_pre$condition) & ((colData_pre$condition == "Normal")
+                  | colData_pre$condition == gene),]
+                  #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  #LEVER OF SYSTEM
+
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[boolvec]
+}
+if(!geneselect){
+ordered_matrix <- ordered_matrix[,colData_pre$condition != "" & !is.na(colData_pre$condition)]
+
+names <- rownames(colData_pre)
+boolvec <- (colData_pre$condition != "" & !is.na(colData_pre$condition))
+
+colData_pre <- colData_pre[colData_pre$condition != "" & !is.na(colData_pre$condition),]
+
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[boolvec]
+}
+
+
+#filtering our matrix to adjust for our desired size
+if(sizea | sizeb){
+  
+ifelse(sizea, ordered_matrix <- ordered_matrix[1:a,1:b], ordered_matrix <- ordered_matrix[,1:b])
+
+names <- rownames(colData_pre)
+colData_pre <- colData_pre[1:b,]
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[1:b]
+  
+}
+
+
+
+#filtering out zero-rows and columns
+ordered_matrix <- ordered_matrix[,colSums(ordered_matrix) != 0]
+ordered_matrix <- ordered_matrix[rowSums(as.data.frame(ordered_matrix)) != 0,]
+
+
+
+
+colData <- colData_pre
+countData <- ordered_matrix
+
+
+```
+
+
+
+
+DESeq and results()
+```{r}
+
+#BiocManager::install("DESeq2")
+library(DESeq2)
+# dds = DESeqDataSetFromMatrix(countData =countData,
+#                               colData=colData,
+#                               design=~1)
+
+dds = DESeqDataSetFromMatrix(countData =countData,
+                              colData=colData,
+                              design=~condition)
+
+# dds = DESeqDataSetFromMatrix(countData=countData,
+#                               colData=colData,
+#                               design=~age + condition + age:condition)
+#                                             ^^^ place var you want to look at in last place
+# age:condition --> tells the program to look for relationship between age and condition
+
+dds = DESeq(dds)
+
+res <- results(dds)
+res
+
+# #What if we want a different p-value?
+# 
+# #for p-value of 0.05:
+# res.05 <- results(dds, alpha = 0.05)
+# table(res.05$padj < 0.05)
+# 
+# resLFC1 <- results(dds, lfcThreshold=1)
+#                       # lfcThreshold: up-regulation should be greater than 2^1, down-regulation should be smaller than 2^(-1)
+# table(resLFC1$padj < 0.1)
+
+
+```
+
+
+Volcano plot
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+# Function 1: Prepare DESeq2 results for plotting
+prepare_res_for_plot <- function(res) {
+  # Convert DESeqResults object to data.frame
+  res_df <- as.data.frame(res)
+
+  # Add rownames as a gene column (optional, adjust based on dataset)
+  res_df$hgnc_symbol <- rownames(res_df)
+
+  return(res_df)
+}
+
+# Prepare the results for the plot
+res_df <- prepare_res_for_plot(res)
+
+# Function 2: Volcano plot function
+volcplot <- function(data, padj_threshold = 0.05, log2Fold_threshold = 1, plot_title = 'Volcano Plot', plot_subtitle = NULL) {
+  # Set the fold-change thresholds
+  neg_log2fc <- -log2Fold_threshold
+  pos_log2fc <- log2Fold_threshold
+
+  # Replace NA values
+  data$padj[is.na(data$padj)] <- 1
+  data$log2FoldChange[is.na(data$log2FoldChange)] <- 0
+
+  # Add log2fc_threshold column
+  data$log2fc_threshold <- ifelse(
+    data$log2FoldChange >= pos_log2fc & data$padj <= padj_threshold, 'up',
+    ifelse(data$log2FoldChange <= neg_log2fc & data$padj <= padj_threshold, 'down', 'ns')
+  )
+
+
+  # Count up, down, and unchanged genes
+  up_genes <- sum(data$log2fc_threshold == 'up')
+  down_genes <- sum(data$log2fc_threshold == 'down')
+  unchanged_genes <- sum(data$log2fc_threshold == 'ns')
+
+  # Generate legend labels
+  legend_labels <- c(
+    paste0('Up: ', up_genes),
+    paste0('Not significant: ', unchanged_genes),
+    paste0('Down: ', down_genes)
+  )
+
+  # Calculate x-axis limits
+  x_axis_limits <- ceiling(max(abs(data$log2FoldChange)))
+
+  # Define plot colors
+  plot_colors <- c(
+    'up' = 'firebrick1',
+    'ns' = 'gray',
+    'down' = 'dodgerblue1'
+  )
+
+  # Create the plot
+  plot <- ggplot(data) +
+    geom_point(
+      aes(x = log2FoldChange, y = -log10(padj), color = log2fc_threshold),
+      alpha = 0.25,
+      size = 0.75
+    ) +
+    geom_vline(xintercept = c(neg_log2fc, pos_log2fc), linetype = 'dashed') +
+    geom_hline(yintercept = -log10(padj_threshold), linetype = 'dashed') +
+    scale_x_continuous(
+      'log2(FC)',
+      limits = c(-x_axis_limits, x_axis_limits)
+    ) +
+    scale_color_manual(
+      values = plot_colors,
+      labels = legend_labels
+    ) +
+    labs(
+      color = paste('log2Fold:', log2Fold_threshold, ' , padj ≤', padj_threshold),
+      title = plot_title,
+      subtitle = plot_subtitle
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      aspect.ratio = 1,
+      axis.text = element_text(color = 'black'),
+      legend.margin = margin(0, 0, 0, 0),
+      legend.box.margin = margin(0, 0, 0, 0),
+      legend.spacing.x = unit(0.2, 'cm')
+    )
+  
+  return(plot)
+}
+
+
+volcplot(
+  data = res_df,
+  padj_threshold = 0.05,
+  log2Fold_threshold = 1,
+  plot_title = "Volcano Plot for DESeq2 Results",
+  plot_subtitle = "Comparison: hoxa1_kd vs control_sirna"
+)
+
+```
+
+
+Lab part 2
+
+```{r}
+
+# BiocManager::install("AnnotationDbi")
+# BiocManager::install("org.Hs.eg.db")
+# BiocManager::install("pathview")
+# BiocManager::install("gage")
+# BiocManager::install("gageData")
+
+```
+
+Evan added a bit of code here to make it work with the new dataset
+```{r}
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+
+#keys(org.Hs.eg.db, keytype = "ENSEMBL")
+
+####Evan added code:
+
+res_rowname_strings <- sub(paste0("\\.", ".*"), "\\.", row.names(res))
+res_rowname_strings <- str_sub(res_rowname_strings, start = 1, end = -2)
+
+
+res$symbol = mapIds(org.Hs.eg.db,
+                    keys=res_rowname_strings, 
+                    column="SYMBOL",
+                    keytype="ENSEMBL",
+                    multiVals="first")
+
+res$entrez = mapIds(org.Hs.eg.db,
+                    keys=res_rowname_strings, 
+                    column="ENTREZID",
+                    keytype="ENSEMBL",
+                    multiVals="first")
+
+res$name =   mapIds(org.Hs.eg.db,
+                    keys=res_rowname_strings, 
+                    column="GENENAME",
+                    keytype="ENSEMBL",
+                    multiVals="first")
+
+head(res, 10)
+
+
+
+library(pathview)
+library(gage)
+
+library(gageData)
+
+data(kegg.sets.hs)
+data(sigmet.idx.hs)
+
+# Focus on signaling and metabolic pathways only
+kegg.sets.hs = kegg.sets.hs[sigmet.idx.hs]
+
+# Examine the first 3 pathways
+head(kegg.sets.hs, 3)
+
+foldchanges = res$log2FoldChange
+names(foldchanges) = res$entrez
+head(foldchanges)
+
+# Get the results
+keggres = gage(foldchanges, gsets=kegg.sets.hs)
+
+attributes(keggres)
+
+# Look at the first few down (less) pathways
+head(keggres$less)
+
+#pathview(gene.data=foldchanges, pathway.id="hsa04110")
+pathview(gene.data=foldchanges, pathway.id="hsa05224") #Evan added: BRCA-specific pathway
+pathview(gene.data=foldchanges, pathway.id="hsa05200") #Evan added: general cancer pathway
+
+
+## Focus on top 5 upregulated pathways here for demo purposes only
+keggrespathways <- rownames(keggres$greater)[1:5]
+
+# Extract the 8 character long IDs part of each string
+keggresids = substr(keggrespathways, start=1, stop=8)
+keggresids
+pathview(gene.data=foldchanges, pathway.id=keggresids, species="hsa")
+
+```
+
