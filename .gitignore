@@ -47,3 +47,8 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+RNAseq_BRCA.csv
+data_clinical_patient.txt
+data_mutations.txt
+.gitattributes
