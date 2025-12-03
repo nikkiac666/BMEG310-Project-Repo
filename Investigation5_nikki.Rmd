@@ -6,9 +6,6 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-#install.packages("xfun")
-#install.packages("patchwork")
-
 library(DESeq2)
 library(biomaRt)
 library(pheatmap)
@@ -501,5 +498,6 @@ ggsurvplot(
   ylab = "Survival Probability"
 )
 ```
+
 
 

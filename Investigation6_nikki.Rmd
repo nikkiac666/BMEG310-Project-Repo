@@ -1,0 +1,352 @@
+---
+title: "Investigation6_nikki"
+author: "Nikki Comfort (47041595)"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+install.packages("glmnet")
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(biomaRt)
+library(DESeq2)
+library(pheatmap)
+library(scales)
+library(glmnet)
+library(pROC)
+```
+
+```{r Load Files}
+clinical <- read.csv("data_clinical_patient.txt", sep = "\t", header = TRUE, skip = 4)
+mutations <- read.csv("data_mutations.txt", sep = "\t", header = TRUE)
+rnaseq <- read.csv("RNAseq_BRCA.csv", header = TRUE)
+```
+
+```{r data and recurrence setup}
+#names(clinical)
+#head(clinical)
+
+clinical <- clinical %>%
+  mutate(
+    PatientID = toupper(PATIENT_ID)
+  )
+#table(clinical$NEW_TUMOR_EVENT_AFTER_INITIAL_TREATMENT, useNA = "ifany")
+#table(clinical$DFS_STATUS, useNA = "ifany")
+
+clinical <- clinical %>%
+  mutate(
+    Recurrence = case_when(
+      # Any explicit new tumor event yes
+      NEW_TUMOR_EVENT_AFTER_INITIAL_TREATMENT == "YES" ~ "Recurrence",
+      NEW_TUMOR_EVENT_AFTER_INITIAL_TREATMENT == "NO"  ~ "NoRecurrence",
+      
+      !is.na(DFS_STATUS) & str_detect(DFS_STATUS, regex("1:Recurred/Progressed", 
+                                                        ignore_case = TRUE)) ~ "Recurrence",
+      !is.na(DFS_STATUS) & str_detect(DFS_STATUS, regex("0:DiseaseFree", 
+                                                        ignore_case = TRUE)) ~ "NoRecurrence",
+      TRUE ~ NA_character_
+    ),
+    Recurrence = factor(Recurrence, levels = c("NoRecurrence", "Recurrence"))
+  )
+#table(clinical$Recurrence, useNA = "ifany")
+
+rnaseq_raw <- rnaseq
+colnames(rnaseq_raw) <- gsub("\\.", "-", colnames(rnaseq_raw))
+gene_col <- colnames(rnaseq_raw)[1]
+
+expr_df <- rnaseq_raw
+rownames(expr_df) <- expr_df[[gene_col]]
+expr_df[[gene_col]] <- NULL
+
+# Configure patient IDs
+sample_ids_full <- colnames(expr_df)
+patient_ids <- substr(sample_ids_full, 1, 12)
+
+expr_samples_x_genes <- t(as.matrix(expr_df))
+expr_collapsed <- rowsum(expr_samples_x_genes, group = patient_ids)  # rows = patients
+expr_mat <- t(expr_collapsed)
+colnames(expr_mat) <- rownames(expr_collapsed)
+
+# Align with clinical:
+clin_rec <- clinical %>% filter(!is.na(Recurrence))
+common_ids <- intersect(clin_rec$PatientID, colnames(expr_mat))
+length(common_ids)
+
+clin_rec <- clin_rec %>% filter(PatientID %in% common_ids)
+expr_sub <- expr_mat[, common_ids]
+expr_sub <- expr_sub[, clin_rec$PatientID] 
+```
+
+```{r Linear model DE}
+# Differential Expression: Recurrance vs NoRecurrance
+# Linear modeling (lm) per gene:
+group <- as.factor(clin_rec$Recurrence)
+
+lm_test <- function(y_gene) {
+  fit <- lm(y_gene ~ group)
+  summary(fit)$coefficients["groupRecurrence", c("Estimate","Pr(>|t|)")]
+}
+
+lm_res <- t(apply(expr_sub, 1, lm_test))
+lm_res <- as.data.frame(lm_res)
+colnames(lm_res) <- c("logFC","pvalue")
+lm_res$pvalue[is.na(lm_res$pvalue)] <- 1
+lm_res$padj <- p.adjust(lm_res$pvalue, method = "fdr")
+
+sum(lm_res$padj < 0.05)
+head(lm_res[order(lm_res$padj), ])
+
+lm_res$ensembl_clean <- sub("\\..*$", "", rownames(lm_res))
+
+# Map genes symbols:
+mart <- useDataset("hsapiens_gene_ensembl", useMart("ensembl"))
+mapping <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol"),
+  filters = "ensembl_gene_id",
+  values  = lm_res$ensembl_clean,
+  mart = mart
+)
+
+# Remove extremely low expression genes (keep >1 TPM-equivalent):
+gene_means <- rowMeans(expr_sub, na.rm = TRUE)
+keep <- gene_means > 1
+lm_res_filt <- lm_res[keep, ]
+
+sum(lm_res_filt$padj < 0.05)
+head(lm_res_filt[order(lm_res_filt$padj), ])
+```
+
+```{r DESeq DE Analysis}
+#head(expr_mat[,1:5])
+dds <- DESeqDataSetFromMatrix(
+  countData = round(expr_sub),      
+  colData   = data.frame(Recurrence = clin_rec$Recurrence),
+  design    = ~ Recurrence
+)
+dds <- DESeq(dds)
+
+res_deseq <- results(dds, contrast = c("Recurrence", "Recurrence", "NoRecurrence"))
+res_deseq$gene <- rownames(res_deseq)
+res_deseq <- res_deseq[order(res_deseq$padj), ]
+head(res_deseq)
+sum(res_deseq$padj < 0.05, na.rm = TRUE) # number of significant genes
+```
+
+```{r Figure 4.1 DE volcano plot}
+ggplot(as.data.frame(res_deseq), aes(x = log2FoldChange, y = -log10(pvalue))) +
+  geom_point(alpha = 0.4) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  labs(
+    title = "Figure 4.1 DESeq2 Differential Expression: Recurrence vs No Recurrence",
+    x = "log2 Fold Change",
+    y = "-log10(p-value)"
+  )
+```
+
+```{r Significant Biomarkers}
+#head(res_deseq, 50)
+res50 <- res_deseq[order(res_deseq$padj), ][1:50, ]
+res50$ensembl_clean <- sub("\\..*", "", rownames(res50)) # remove version numbers
+
+# Annotate top 50 and merge:
+mart <- useDataset("hsapiens_gene_ensembl", useMart("ensembl"))
+annot <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol", "gene_biotype"),
+  filters    = "ensembl_gene_id",
+  values     = res50$ensembl_clean,
+  mart       = mart
+)
+
+res50_annot <- merge(
+  as.data.frame(res50),
+  annot,
+  by.x = "ensembl_clean",
+  by.y = "ensembl_gene_id",
+  all.x = TRUE
+)
+#res50_annot
+
+# Create meaningful gene identifiers:
+res50_annot$label <- ifelse(
+  res50_annot$hgnc_symbol == "" | is.na(res50_annot$hgnc_symbol),
+  paste0(res50_annot$gene_biotype, " (", res50_annot$gene, ")"),
+  res50_annot$hgnc_symbol
+)
+
+# Select top N:
+N <- 20
+valid <- res50_annot[!is.na(res50_annot$label) & res50_annot$label != "", ]
+topN <- head(valid, N)
+topN[, c("label", "log2FoldChange", "padj", "gene_biotype")]
+```
+
+```{r Biomarker Table}
+biomarker_table <- topN %>%
+  select(
+    Gene = label,
+    log2FoldChange,
+    padj,
+    Biotype = gene_biotype,
+    ENSEMBL = ensembl_clean
+  ) %>%
+  mutate(
+    log2FoldChange = round(log2FoldChange, 3),
+    padj = signif(padj, 3)
+  ) %>%
+  arrange(padj)
+
+biomarker_table
+```
+
+
+```{r Figure 4.2 Heatmap top20}
+norm_counts <- counts(dds, normalized=TRUE)
+rownames(norm_counts) <- sub("\\..*", "", rownames(norm_counts))
+
+mat_top20 <- norm_counts[topN$ensembl_clean, clin_rec$PatientID]
+mat_top20 <- mat_top20[, clin_rec$PatientID]
+#topN$ensembl_clean[!topN$ensembl_clean %in% rownames(norm_counts)]
+#table(colnames(norm_counts) %in% clin_rec$PatientID)
+
+ann <- data.frame(Recurrence = clin_rec$Recurrence)
+rownames(ann) <- clin_rec$PatientID
+#all(colnames(mat_top20) == rownames(ann))
+ann <- ann[colnames(mat_top20), , drop=FALSE]
+ann$Recurrence <- droplevels(as.factor(ann$Recurrence))
+
+annotation_colors <- list(
+  Recurrence = c("NoRecurrence" = "#b2df8a", "Recurrence" = "#f83f2C")
+)
+
+pheatmap(
+  mat_top20,
+  scale = "row",
+  clustering_distance_cols = "euclidean",
+  annotation_col = ann,
+  show_colnames = FALSE,
+  fontsize_row = 8,
+  annotation_colors = annotation_colors,
+  main = "Figure 4.2 Top 20 Genes Heatmap with Recurrence Clusters"
+)
+```
+
+```{r Figures 4.3-7 Boxplots}
+gene1 <- "ENSG00000011677"  # GABRA3 ENSG
+df_plot1 <- data.frame(
+  expr = norm_counts[gene1, clin_rec$PatientID],
+  Recurrence = clin_rec$Recurrence
+)
+ggplot(df_plot1, aes(x = Recurrence, y = expr, fill = Recurrence)) +
+  geom_boxplot() +
+  scale_y_continuous(trans="log1p") +
+  labs(
+    title = paste("Figure 4.3 Expression of", "GABRA3"),
+    y = "Normalized expression (log1p)"
+  ) +
+  theme_bw()
+
+gene2 <- "ENSG00000075618"  # FSCN1 ENSG
+df_plot2 <- data.frame(
+  expr = norm_counts[gene2, clin_rec$PatientID],
+  Recurrence = clin_rec$Recurrence
+)
+ggplot(df_plot2, aes(x = Recurrence, y = expr, fill = Recurrence)) +
+  geom_boxplot() +
+  scale_y_continuous(trans="log1p") +
+  labs(
+    title = paste("Figure 4.4 Expression of", "FSCN1"),
+    y = "Normalized expression (log1p)"
+  ) +
+  theme_bw()
+
+gene3 <- "ENSG00000091138"  # SLC26A3 ENSG
+df_plot3 <- data.frame(
+  expr = norm_counts[gene3, clin_rec$PatientID],
+  Recurrence = clin_rec$Recurrence
+)
+ggplot(df_plot3, aes(x = Recurrence, y = expr, fill = Recurrence)) +
+  geom_boxplot() +
+  scale_y_continuous(trans="log1p") +
+  labs(
+    title = paste("Figure 4.5 Expression of", "SLC26A3"),
+    y = "Normalized expression (log1p)"
+  ) +
+  theme_bw()
+
+gene4 <- "ENSG00000092054"  # MYH7 ENSG
+df_plot4 <- data.frame(
+  expr = norm_counts[gene4, clin_rec$PatientID],
+  Recurrence = clin_rec$Recurrence
+)
+ggplot(df_plot4, aes(x = Recurrence, y = expr, fill = Recurrence)) +
+  geom_boxplot() +
+  scale_y_continuous(trans="log1p") +
+  labs(
+    title = paste("Figure 4.6 Expression of", "MYH7"),
+    y = "Normalized expression (log1p)"
+  ) +
+  theme_bw()
+
+gene5 <- "ENSG00000102683"  # SGCG ENSG
+df_plot5 <- data.frame(
+  expr = norm_counts[gene5, clin_rec$PatientID],
+  Recurrence = clin_rec$Recurrence
+)
+ggplot(df_plot5, aes(x = Recurrence, y = expr, fill = Recurrence)) +
+  geom_boxplot() +
+  scale_y_continuous(trans="log1p") +
+  labs(
+    title = paste("Figure 4.7 Expression of", "SGCG"),
+    y = "Normalized expression (log1p)"
+  ) +
+  theme_bw()
+```
+
+```{r Figure 4.8 PCA plot}
+mat <- t(mat_top20)  # samples × genes
+
+pca <- prcomp(mat, scale. = TRUE)
+
+pca_df <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2],
+  Recurrence = clin_rec$Recurrence
+)
+
+ggplot(pca_df, aes(PC1, PC2, color = Recurrence)) +
+  geom_point(size = 3, alpha = 0.8) +
+  theme_bw() +
+  labs(title = "PCA of Top 20 Recurrence-Associated Genes")
+```
+```{r LASSO}
+mat_all <- counts(dds, normalized = TRUE)
+rownames(mat_all) <- sub("\\..*", "", rownames(mat_all))
+
+# keep only patients used in analysis
+mat_all <- mat_all[, clin_rec$PatientID]
+
+# top 1700 most variable genes
+gene_var <- apply(mat_all, 1, var)
+top1700 <- names(sort(gene_var, decreasing = TRUE))[1:1700]
+
+x <- t(mat_all[top1700, ])
+y <- ifelse(clin_rec$Recurrence == "Recurrence", 1, 0)
+
+# Run LASSO:
+set.seed(123)
+cvfit <- cv.glmnet(x, y, family = "binomial")
+
+lasso_genes <- rownames(coef(cvfit, s="lambda.min"))[
+  coef(cvfit, s="lambda.min")[,1] != 0
+]
+lasso_genes
+
+# Evaluate model:
+pred <- predict(cvfit, newx = x, s = "lambda.min", type="response")
+roc_obj <- roc(y, pred)
+auc(roc_obj)
+plot(roc_obj)
+```
+
