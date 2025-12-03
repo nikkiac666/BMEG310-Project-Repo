@@ -13,6 +13,10 @@ library(DESeq2)
 library(biomaRt)
 library(pheatmap)
 library(ggplot2)
+library(RColorBrewer)
+library(survival)
+library(survminer)
+library(gridExtra)
 ```
 
 ```{r Load Files}
@@ -158,46 +162,344 @@ immune_scores$PATIENT_ID <- substr(immune_scores$sample_id, 1, 12)
 immune_scores$patient <- NULL
 #head(immune_scores$PATIENT_ID)
 
+# Filter IDs such that there is only one sample per patient:
+# Only keep primary tumor samples (01)
+immune_primary <- immune_scores[grepl("-01", immune_scores$sample_id), ]
+# Only keep one aliquot per patient (preferred A, else B, else C)
+immune_primary_unique <- immune_primary[!duplicated(immune_primary$PATIENT_ID), ]
+# Remove extra RNA-only patients
+immune_primary_unique <- immune_primary_unique[
+  immune_primary_unique$PATIENT_ID %in% clinical$PATIENT_ID,
+]
+
 merged <- merge(
   clinical,
-  immune_scores,
+  immune_primary_unique,
   by = "PATIENT_ID"
 )
 
-dim(merged)
-head(merged[, 1:8])
+#dim(merged)
+#head(merged[, 1:8])
+#tail(merged, 20)
+#merged[, 61]
+#table(table(immune_primary_unique$PATIENT_ID))
+length(unique(immune_primary_unique$PATIENT_ID))
+#setdiff(immune_primary_unique$PATIENT_ID, clinical$PATIENT_ID)
 ```
 
 Visualizations:
 ```{r Figure 5.1 Heatmap}
 # First configure immune_scores matrix for heatmapping
-immune_mat <- immune_scores[, !(names(immune_scores) %in% c("sample_id", "PATIENT_ID"))]
-dim(immune_mat)
-#colnames(immune_mat)
-immune_mat_scaled <- scale(immune_mat)
+immune_mat <- immune_primary_unique[, !(names(immune_primary_unique) %in% c("sample_id",
+                                                                            "PATIENT_ID"))]
+rownames(immune_mat) <- immune_primary_unique$PATIENT_ID
+immune_mat_scaled <- scale(immune_mat) # normalize by scaling by column
+
+# Build Stage annotation for better interpretability:
+stage_col <- "AJCC_PATHOLOGIC_TUMOR_STAGE"
+annotation_df <- data.frame(Stage = as.factor(merged[[stage_col]]))
+rownames(annotation_df) <- merged$PATIENT_ID
+annotation_df <- annotation_df[rownames(immune_mat_scaled), , drop = FALSE]
+annotation_df$Stage[annotation_df$Stage == ""] <- NA
+annotation_df$Stage <- droplevels(annotation_df$Stage)
+
+ordered_stages <- c(
+  "STAGE I","STAGE IA","STAGE IB",
+  "STAGE II","STAGE IIA","STAGE IIB",
+  "STAGE III","STAGE IIIA","STAGE IIIB","STAGE IIIC",
+  "STAGE IV", "STAGE X"
+)
+remaining_stages <- setdiff(unique(annotation_df$Stage), ordered_stages)
+annotation_df$Stage <- factor(annotation_df$Stage,
+                              levels = c(ordered_stages, remaining_stages))
+
+# Add clustering cut to heatmap
+hc <- hclust(dist(immune_mat_scaled))
+immune_cluster <- cutree(hc, k = 2)
+annotation_df$ImmuneCluster <- factor(
+  immune_cluster,
+  levels = c(1, 2),
+  labels = c("Immune-Cold", "Immune-Hot")
+)
+
+col_order <- c(
+  "B_cells_naive","B_cells_memory","Plasma_cells",
+  "T_cells_CD4_naive","T_cells_CD4_memory_resting","T_cells_CD4_memory_activated",
+  "T_cells_follicular_helper","Tregs",
+  "T_cells_gamma_delta","T_cells_CD8",
+  "NK_cells_resting","NK_cells_activated",
+  "Dendritic_cells_resting","Dendritic_cells_activated",
+  "Monocytes","Macrophages_M0","Macrophages_M1","Macrophages_M2",
+  "Mast_cells_resting","Mast_cells_activated",
+  "Neutrophils","Eosinophils"
+)
+immune_mat_scaled <- immune_mat_scaled[, col_order]
+
+# Color generation:
+stage_colors_manual <- c(
+  "STAGE I"   = "#b2df8a",   
+  "STAGE IA"  = "#66c26f",
+  "STAGE IB"  = "#1f9850",
+  "STAGE II"  = "#fdbf4f",   
+  "STAGE IIA" = "#fca43a",
+  "STAGE IIB" = "#fb8d4d",
+  "STAGE III"  = "#f83f2C",  
+  "STAGE IIIA" = "#f3201c",
+  "STAGE IIIB" = "#d91a1c",
+  "STAGE IIIC" = "#af0b00",
+  "STAGE IV"   = "#81005F",  
+  "STAGE X"    = "#bdbdbd"   # grey for missing/unconventional
+)
+
+annotation_colors <- list(
+  ImmuneCluster = c("Immune-Cold" = "#1C9EEB", "Immune-Hot" = "#FF9F61"),
+  Stage = stage_colors_manual
+)
 
 pheatmap(
   immune_mat_scaled,
+  #color = my_palette,
   show_rownames = FALSE,
-  fontsize_col = 10,
-  clustering_distance_rows = "euclidean",
-  clustering_distance_cols = "euclidean",
-  clustering_method = "complete",
-  main = "Figure 5.1: Immune Cell Infiltration (LM22) Heatmap"
+  fontsize = 10,
+  fontsize_row = 0, # hides row labels
+  fontsize_col = 8,
+  angle_col = 90,
+  #clustering_distance_rows = "euclidean",
+  #clustering_distance_cols = "euclidean",
+  clustering_cols = FALSE,
+  clustering_method = "ward.D2",
+  cutree_rows = 2,
+  annotation_row = annotation_df,
+  annotation_colors = annotation_colors,
+  main = "Figure 5.1: Immune Infiltration Heatmap (LM22 Signatures) with Immune Clusters"
 )
 ```
 
-```{r Figure 5.2 Boxplot}
-ggplot(merged_data, aes(x = AJCC_PATHOLOGIC_TUMOR_STAGE, y = T_cells_CD8)) +
-  geom_boxplot() +
-  theme_bw()
+```{r Figure 5.2 & 5.3 PCA Analysis}
+pca_mat <- immune_mat_scaled 
+
+pca_res <- prcomp(pca_mat, center = TRUE, scale. = TRUE)
+  #this gives:
+    # pca_res$x = PCA coordinates
+    # pca_res$rotation = loadings = how each immune signature contributes
+    # pca_res$sdev = s.d. of PCs
+
+# Build PCA dataframe:
+pca_df <- as.data.frame(pca_res$x)
+pca_df$PATIENT_ID <- rownames(pca_mat)
+pca_df$ImmuneCluster <- annotation_df$ImmuneCluster
+pca_df$Stage <- annotation_df$Stage
+
+# Compute variance
+var_exp <- (pca_res$sdev)^2 / sum(pca_res$sdev^2)
+pc1_lab <- paste0("Immune Activation Axis (PC1) (", round(100 * var_exp[1], 1), "%)")
+pc2_lab <- paste0("Myeloid/Lymphoid Axis (PC2) (", round(100 * var_exp[2], 1), "%)")
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = ImmuneCluster)) +
+  geom_point(alpha = 0.7, size = 2) +
+  scale_color_manual(values = c("Immune-Cold" = "#1C9EEB", "Immune-Hot" = "#FF9F61")) +
+  labs(title = "Figure 5.2 PCA of Immune Infiltration (LM22)", 
+       x = pc1_lab, y = pc2_lab,
+       color = "Immune Cluster") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", size = 16),
+    panel.grid.minor = element_blank()
+  )
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Stage)) +
+  geom_point(alpha = 0.7, size = 2) +
+  scale_color_manual(values = stage_colors_manual) +
+  labs(title = "Figure 5.3: PCA of Immune Infiltration Colored by Stage",
+       x = pc1_lab, y = pc2_lab,
+       color = "Stage") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", size = 16),
+    panel.grid.minor = element_blank()
+  )
+
+loadings_df <- as.data.frame(pca_res$rotation[, 1:2])
+loadings_df$CellType <- rownames(loadings_df)
+
+ggplot(loadings_df, aes(x = PC1, y = PC2, label = CellType)) +
+  geom_point() +
+  geom_text(vjust = 1.2, size = 3) +
+  labs(title = "Loadings for PC1 and PC2",
+       x = "PC1 Loading", y = "PC2 Loading") +
+  theme_minimal()
 ```
 
-```{r Figure 5.3 Survival Analysis}
-merged_data$OS <- ifelse(merged_data$vital_status == "Dead", 1, 0)
+```{r Figure 5.4 Survival Analysis}
+# Configure (merge) survival data:
+clinical$OS_STATUS <- toupper(trimws(clinical$OS_STATUS))
+clinical$OS_STATUS_CLEAN <- sub(".*:", "", clinical$OS_STATUS)
+clinical$OS_EVENT <- ifelse(clinical$OS_STATUS_CLEAN == "DECEASED", 1, 0)
+clinical$OS_MONTHS <- as.numeric(clinical$OS_MONTHS)
 
-fit <- survfit(Surv(OS_TIME, OS) ~ T_cells_CD8_group, data = merged_data)
+surv_df <- data.frame(
+  PATIENT_ID = rownames(annotation_df),
+  ImmuneCluster = annotation_df$ImmuneCluster,
+  stringsAsFactors = FALSE
+)
 
-ggsurvplot(fit, data = merged_data)
+surv_df <- merge(
+  surv_df,
+  clinical[, c("PATIENT_ID", "OS_MONTHS", "OS_EVENT")],
+  by = "PATIENT_ID",
+  all.x = TRUE
+)
+
+surv_df$ImmuneCluster <- factor(
+  surv_df$ImmuneCluster,
+  levels = c("Immune-Cold", "Immune-Hot")
+)
+table(surv_df$ImmuneCluster)
+
+# Perform survival:
+surv_obj <- Surv(
+  time  = surv_df$OS_MONTHS,
+  event = surv_df$OS_EVENT
+)
+fit <- survfit(surv_obj ~ ImmuneCluster, data = surv_df)
+
+ggsurvplot(
+  fit,
+  data = surv_df,
+  pval = TRUE,
+  risk.table = TRUE,
+  conf.int = FALSE,
+  palette = c("#1C9EEB", "#E84E2C"),  # Cold, Hot (in that order)
+  legend.title = "Immune Cluster",
+  legend.labs = c("Immune-Cold", "Immune-Hot"),
+  title = "Figure 5.4: Overall Survival by Immune Clusters",
+  xlab = "Time (Months)",
+  ylab = "Survival Probability",
+  risk.table.height = 0.3,
+  ggtheme = theme_bw(base_size = 14)
+)
+
+# Cox proportional hazard model:
+cox <- coxph(surv_obj ~ ImmuneCluster, data = surv_df)
+summary(cox)
 ```
+
+```{r Figure 5.5-9 Survival Analysis by Subtype}
+immune_df <- data.frame(
+  PATIENT_ID = immune_primary_unique$PATIENT_ID,
+  ImmuneCluster = annotation_df$ImmuneCluster,
+  stringsAsFactors = FALSE
+)
+clinical_df <- clinical[, c("PATIENT_ID", "SUBTYPE", "OS_MONTHS", "OS_EVENT")]
+clinical_df$OS_MONTHS <- as.numeric(clinical_df$OS_MONTHS)
+clinical_df$OS_EVENT  <- as.numeric(clinical_df$OS_EVENT)
+
+full_df <- merge(immune_df, clinical_df, by = "PATIENT_ID", all = FALSE)
+full_df <- full_df[!is.na(full_df$SUBTYPE), ]
+
+full_df$SUBTYPE <- factor(
+  full_df$SUBTYPE,
+  levels = c("BRCA_Normal", "BRCA_LumA", "BRCA_LumB", "BRCA_Her2", "BRCA_Basal")
+)
+
+full_df$ImmuneCluster <- factor(
+  full_df$ImmuneCluster,
+  levels = c("Immune-Cold", "Immune-Hot")
+)
+#table(full_df$ImmuneCluster)
+#table(full_df$SUBTYPE)
+#table(full_df$SUBTYPE, full_df$ImmuneCluster)
+
+plots <- list()
+i <- 5.9
+for (sub in levels(full_df$SUBTYPE)) {
+  
+  df_sub <- full_df[full_df$SUBTYPE == sub, ]
+  
+  # Build survival object
+  surv_obj <- Surv(df_sub$OS_MONTHS, df_sub$OS_EVENT)
+  
+  # Fit KM model
+  fit <- survfit(surv_obj ~ ImmuneCluster, data = df_sub)
+  
+  # Plot
+  p <- ggsurvplot(
+    fit,
+    data = df_sub,
+    pval = TRUE,
+    conf.int = FALSE,
+    palette = c("#1C9EEB", "#E84E2C"),     # Blue = cold, Red = hot
+    legend.title = "Immune Cluster",
+    legend.labs = c("Immune-Cold", "Immune-Hot"),
+    title = paste("Figure", as.character(i), "Survival –", sub),
+    xlab = "Months",
+    ylab = "Survival Probability",
+    ggtheme = theme_bw(base_size = 10)
+  )
+  plots[[sub]] <- p
+  i <- i - 0.1
+}
+
+grid.arrange(
+  plots$BRCA_Basal$plot,
+  plots$BRCA_Her2$plot,
+  plots$BRCA_LumA$plot,
+  plots$BRCA_LumB$plot,
+  ncol = 2
+)
+plots$BRCA_Normal$plot
+```
+
+```{r Figure 5.10-11 Survival by CD8 and Macrophages_M2}
+#colnames(immune_scores)
+analysis_df <- merge(
+  immune_scores[, c("PATIENT_ID", "T_cells_CD8", "Macrophages_M2")],
+  clinical_df,
+  by = "PATIENT_ID",
+  all = FALSE
+)
+
+# CD8 high vs low (median split)
+analysis_df$CD8_group <- ifelse(
+  analysis_df$T_cells_CD8 >= median(analysis_df$T_cells_CD8, na.rm = TRUE),
+  "CD8-high", "CD8-low"
+)
+surv_obj_cd8 <- Surv(analysis_df$OS_MONTHS, analysis_df$OS_EVENT)
+fit_cd8 <- survfit(surv_obj_cd8 ~ CD8_group, data = analysis_df)
+
+ggsurvplot(
+  fit_cd8,
+  data = analysis_df,
+  pval = TRUE,
+  palette = c("#1C9EEB", "#E84E2C"),
+  title = "Figure 5.10 Survival by CD8",
+  legend.title = "Status",
+  legend.labs = c("CD8-low", "CD8-high"),
+  xlab = "Months",
+  ylab = "Survival Probability"
+)
+
+# Macrophages_M2 high vs low (median split)
+analysis_df$Macrophages_M2_group <- ifelse(
+  analysis_df$Macrophages_M2 >= median(analysis_df$Macrophages_M2, na.rm = TRUE),
+  "Macrophages_M2-high", "Macrophages_M2-low"
+)
+surv_obj_macrophM2 <- Surv(analysis_df$OS_MONTHS, analysis_df$OS_EVENT)
+fit_macrophM2 <- survfit(surv_obj_macrophM2 ~ Macrophages_M2_group, data = analysis_df)
+
+ggsurvplot(
+  fit_macrophM2,
+  data = analysis_df,
+  pval = TRUE,
+  palette = c("#1C9EEB", "#E84E2C"),
+  title = "Figure 5.11 Survival by Macrophages_M2",
+  legend.title = "Status",
+  legend.labs = c("Macrophages_M2-low", "Macrophages_M2-high"),
+  xlab = "Months",
+  ylab = "Survival Probability"
+)
+```
+
 
