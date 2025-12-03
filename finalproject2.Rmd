@@ -1,0 +1,320 @@
+---
+title: "newproject2"
+author: "Hemanya Sharma, 41946609"
+date: "2025-12-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#install.packages("xfun")
+#install.packages("org.Hs.eg.db")
+
+library(survival)
+library(survminer)
+library(dplyr)
+library("SummarizedExperiment")
+library("psych")
+library(ggplot2)
+library(TCGAbiolinks)
+library(patchwork)
+library(pheatmap)
+library(reshape2)
+library(devtools)
+library(remotes)
+library(ggbiplot)
+library(apeglm)
+
+#install.packages("BiocManager")
+
+#BiocManager::install("apeglm")
+```
+
+```{r Load Files}
+setwd("C:/Users/heman/OneDrive - UBC/Desktop/Intro-to-R-BMEG310")
+clinical <- read.csv("TCGA-BRCA/data_clinical_patient.txt", sep = "\t", header = TRUE, skip = 4)
+mutations <- read.csv("TCGA-BRCA/data_mutations.txt", sep = "\t", header = TRUE)
+rnaseq <- read.csv("TCGA-BRCA/RNAseq_BRCA.csv", header = TRUE)
+```
+
+#Data Normalization:
+```{r data normalization}
+# Configure raw rnaseq data:
+gene_colname <- colnames(rnaseq)[1]
+
+gene_ids <- rnaseq[[gene_colname]]
+
+count_mat <- rnaseq[, -1]
+count_mat <- as.matrix(count_mat)
+
+rownames(count_mat) <- gene_ids
+
+# DESeq2 Dataset:
+sample_info <- data.frame(row.names = colnames(count_mat),
+                          condition = rep("BRCA", ncol(count_mat)))
+
+#head(rownames(rna_norm))
+#head(colnames(rna_norm))
+#dim(rna_norm)
+```
+
+#Clean Tumor Stage Data
+```{r Cleaning Tumor Stage Data}
+#colnames(clinical)
+
+stage <- tolower(clinical$AJCC_PATHOLOGIC_TUMOR_STAGE)
+stage <- gsub("\\s*[abc]$", "", stage)
+
+#remove the end stuff (subtypes)
+stage[stage %in% c("", "stage x")] <- NA
+
+# remove the word "stage "
+stage <- gsub("stage ", "", stage)
+
+convert_roman <- function(x) {
+  if (is.na(x)) return(NA_integer_)
+  
+  if (x == "i")  return(1L)
+  if (x == "ii") return(2L)
+  if (x == "iii") return(3L)
+  if (x == "iv") return(4L)
+  
+  return(NA_integer_)
+}
+
+
+clinical$STAGE_NUMERIC <- sapply(stage, convert_roman)
+
+clinical$STAGE_FACTOR <- factor(clinical$STAGE_NUMERIC,
+                                levels = c(1,2,3,4),
+                                labels = c("Stage I", "Stage II", "Stage III", 
+                                           "Stage IV"))
+
+
+#head(clinical$STAGE_NUMERIC)
+
+#head(clinical$AJCC_PATHOLOGIC_TUMOR_STAGE)
+```
+
+```{r Finding Number of Indiviuals in Advanced vs Early Stage}
+clinical$TUMOR_STAGE <- ifelse(
+  clinical$STAGE_NUMERIC %in% c(1,2), "Early",
+  ifelse(clinical$STAGE_NUMERIC %in% c(3,4), "Advanced", NA)
+)
+
+table(clinical$TUMOR_STAGE, useNA = "ifany")
+#note: clinical$TUMOR_STAGE tells early vs advanced and NA has already been removed.
+
+```
+#Visualization
+```{r Figure 3.1- Counts for Early vs Advanced Stage}
+#ggplot(clinical$TUMOR_sTAGE)
+
+ggplot(clinical, aes(x = TUMOR_STAGE)) +
+  geom_bar(fill = "hotpink") +
+  labs(
+    title = "Counts of Early vs Advanced Tumor Stage",
+    x = "Tumor Stage Group",
+    y = "Number of Patients"
+  )
+
+```
+
+
+# --- Differential Analysis ---
+```{r Finding Common Patients btwn clinical + rnaseq}
+# RNA: sample IDs from count matrix
+rna_samples       <- colnames(count_mat)
+rna_samples_clean <- gsub("\\.", "-", rna_samples)
+rna_patient_ids   <- substr(rna_samples_clean, 1, 12)
+
+head(rna_patient_ids)
+
+# Clinical: patient IDs
+clinical_patient_ids <- substr(clinical$PATIENT_ID, 1, 12)
+head(clinical_patient_ids)
+
+# Common patients
+common_patients <- intersect(rna_patient_ids, clinical_patient_ids)
+
+head(common_patients)
+length(common_patients)
+
+```
+```{r clean data + make metadata}
+clinical$PATIENT_12 <- substr(clinical$PATIENT_ID, 1, 12)
+
+# keep matching rows
+clin_meta <- clinical[clinical$PATIENT_12 %in% common_patients, ]
+
+# remove duplicates
+clin_meta <- clin_meta[!duplicated(clin_meta$PATIENT_12), ]
+
+# reorder to match RNA order
+order_idx <- match(rna_patient_ids, clin_meta$PATIENT_12)
+clin_meta <- clin_meta[order_idx, ]
+
+# drop NA tumor stage after alignment
+valid <- !is.na(clin_meta$TUMOR_STAGE)
+clin_meta <- clin_meta[valid, ]
+count_mat_final <- count_mat[, valid]
+
+# build metadata
+metadata_df <- data.frame(
+  row.names = colnames(count_mat_final),
+  Stage = factor(clin_meta$TUMOR_STAGE, levels = c("Early", "Advanced"))
+)
+
+```
+
+```{r perform DESeq}
+library(DESeq2)
+
+dds <- DESeqDataSetFromMatrix(
+    countData = count_mat_final,
+    colData   = metadata_df,
+    design    = ~ Stage
+)
+
+dds <- dds[rowSums(counts(dds)) > 0, ]
+dds <- DESeq(dds)
+
+```
+
+```{r DESeq part 2}
+res <- results(dds, contrast = c("Stage", "Advanced", "Early"))
+res_shrunk <- lfcShrink(dds, coef = "Stage_Advanced_vs_Early", type = "apeglm")
+res_ordered <- res_shrunk[order(res_shrunk$pvalue), ]
+head(res_ordered)
+
+```
+
+```{r DESeq part 3 - final p values}
+#p value ordering 
+res_ordered <- res_shrunk[order(res_shrunk$pvalue), ]
+head(res_ordered)
+```
+```{r volcano plot setup}
+library(ggplot2)
+library(ggrepel)
+
+# Function 1: Prepare DESeq2 results for plotting
+prepare_res_for_plot <- function(res) {
+  res_df <- as.data.frame(res)
+  res_df$gene <- rownames(res_df)
+  return(res_df)
+}
+
+# Prepare the results for the plot (use res or res_shrunk)
+res_df <- prepare_res_for_plot(res_shrunk)
+
+# Function 2: Volcano plot
+volcplot <- function(data, padj_threshold = 0.05, log2Fold_threshold = 1,
+                     plot_title = 'Volcano Plot', plot_subtitle = NULL) {
+  
+  df <- data   # local copy so original isn't modified
+  
+  # Set FC thresholds
+  neg_log2fc <- -log2Fold_threshold
+  pos_log2fc <- log2Fold_threshold
+  
+  # Replace NA values
+  df$padj[is.na(df$padj)] <- 1
+  df$log2FoldChange[is.na(df$log2FoldChange)] <- 0
+  
+  # Label genes
+  df$log2fc_threshold <- ifelse(
+    df$log2FoldChange >= pos_log2fc & df$padj <= padj_threshold, 'up',
+    ifelse(df$log2FoldChange <= neg_log2fc & df$padj <= padj_threshold, 'down', 'ns')
+  )
+  
+  # Count categories
+  up_genes <- sum(df$log2fc_threshold == 'up')
+  down_genes <- sum(df$log2fc_threshold == 'down')
+  unchanged_genes <- sum(df$log2fc_threshold == 'ns')
+  
+  legend_labels <- c(
+    paste0('Up: ', up_genes),
+    paste0('Not significant: ', unchanged_genes),
+    paste0('Down: ', down_genes)
+  )
+  
+  x_axis_limits <- ceiling(max(abs(df$log2FoldChange)))
+  
+  plot_colors <- c(
+    'up' = 'springgreen',
+    'ns' = 'gray',
+    'down' = 'cornflowerblue'
+  )
+  
+  ggplot(df) +
+    geom_point(aes(x = log2FoldChange, y = -log10(padj), color = log2fc_threshold),
+               alpha = 0.25, size = 1.5) +
+    geom_vline(xintercept = c(neg_log2fc, pos_log2fc), linetype = 'dashed') +
+    geom_hline(yintercept = -log10(padj_threshold), linetype = 'dashed') +
+    scale_x_continuous('log2(FC)', limits = c(-x_axis_limits, x_axis_limits)) +
+    scale_color_manual(values = plot_colors, labels = legend_labels) +
+    labs(
+      color = paste('log2Fold:', log2Fold_threshold, ', padj ≤', padj_threshold),
+      title = plot_title,
+      subtitle = plot_subtitle
+    ) +
+    theme_bw(base_size = 24) +
+    theme(
+      aspect.ratio = 1,
+      axis.text = element_text(color = 'black'),
+      legend.margin = margin(0, 0, 0, 0),
+      legend.box.margin = margin(0, 0, 0, 0),
+      legend.spacing.x = unit(0.2, 'cm')
+    )
+}
+
+
+```
+
+#Visualization
+```{r, fig.width=7, fig.height=6 Figure 3.2 Volcano Plot for Tumor Stage}
+# Generate the volcano plot
+volcplot(
+  data = res_df,
+  padj_threshold = 0.05,
+  log2Fold_threshold = 1,
+  plot_title = "Volcano Plot for DESeq2 Results",
+  plot_subtitle = "Comparison: Advanced vs Early Stage Tumors"
+)
+```
+```{r}
+library(DESeq2)
+library(pheatmap)
+
+# --- 1. Apply VST transformation once (fastest for large cohorts) ---
+vsd <- vst(dds, blind = FALSE)
+mat <- assay(vsd)
+
+# --- 2. Compute sample-to-sample distances ---
+sampleDists <- dist(t(mat))
+sampleDistMatrix <- as.matrix(sampleDists)
+
+# --- 3. Ensure matrix row/col names match RNA sample IDs ---
+rownames(sampleDistMatrix) <- colnames(count_mat_final)
+colnames(sampleDistMatrix) <- colnames(count_mat_final)
+
+# --- 4. Build annotation dataframe using clinical metadata ---
+annot_df <- data.frame(Stage = clin_meta$TUMOR_STAGE)
+rownames(annot_df) <- colnames(count_mat_final)
+
+# --- 5. Plot heatmap ---
+pheatmap(
+  sampleDistMatrix,
+  clustering_distance_rows = sampleDists,
+  clustering_distance_cols = sampleDists,
+  show_rownames = FALSE,
+  show_colnames = FALSE,
+  annotation_col = annot_df,
+  main = "Sample-to-Sample Distance Heatmap (VST-transformed)"
+)
+
+
+```
+
+
+
