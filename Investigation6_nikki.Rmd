@@ -183,7 +183,7 @@ topN <- head(valid, N)
 topN[, c("label", "log2FoldChange", "padj", "gene_biotype")]
 ```
 
-```{r Biomarker Table}
+```{r Table 4.1 Biomarkers}
 biomarker_table <- topN %>%
   select(
     Gene = label,
@@ -429,9 +429,9 @@ mat_all <- mat_all[, clin_rec$PatientID]
 
 # top 1700 most variable genes
 gene_var <- apply(mat_all, 1, var)
-top1700 <- names(sort(gene_var, decreasing = TRUE))[1:1700]
+top2000 <- names(sort(gene_var, decreasing = TRUE))[1:2000]
 
-x <- t(mat_all[top1700, ])
+x <- t(mat_all[top2000, ])
 y <- ifelse(clin_rec$Recurrence == "Recurrence", 1, 0)
 
 # Run LASSO:
