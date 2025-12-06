@@ -2,11 +2,27 @@
 title: "BMEG310 BRCA Report II"
 author: "Group 5: Calla Stanley, Hemanya Sharma, Evan Alanen, Nikki Comfort"
 date: ""
-output: html_document
+output:
+  pdf_document:
+    latex_engine: xelatex
 ---
 
 ```{r}
-install.packages("glmnet")
+# install.packages("glmnet")
+
+# BiocManager::install("AnnotationDbi")
+# BiocManager::install("org.Hs.eg.db")
+# BiocManager::install("pathview")
+# BiocManager::install("gage")
+# BiocManager::install("gageData")
+# BiocManager::install("DESeq2")
+# install.packages("png")
+# install.packages("magick")
+# install.packages("knitr")
+# BiocManager::install("ComplexHeatmap")
+
+#calculating system runtime
+start.time <- Sys.time()
 
 ```
 
@@ -27,23 +43,35 @@ library(remotes)
 library(ggbiplot)
 library(org.Hs.eg.db)
 library(DESeq2)
-
-#install.packages("glmnet")
 library(stringr)
 library(biomaRt)
 library(scales)
 library(glmnet)
 library(pROC)
 library(ggrepel)
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library(pathview)
+library(gage)
+library(gageData)
+library(png)
+library(magick)
+library(knitr)
+library("psych")
+library(ComplexHeatmap)
+library(biomaRt)
 
-# add any other libraries used
+
 ```
 
 ```{r Load Files}
-setwd("C:/Users/heman/OneDrive - UBC/Desktop/Intro-to-R-BMEG310")
-clinical <- read.csv("TCGA-BRCA/data_clinical_patient.txt", sep = "\t", header = TRUE, skip = 4)
-mutations <- read.csv("TCGA-BRCA/data_mutations.txt", sep = "\t", header = TRUE)
-rnaseq <- read.csv("TCGA-BRCA/RNAseq_BRCA.csv", header = TRUE)
+#setwd("C:/Users/heman/OneDrive - UBC/Desktop/Intro-to-R-BMEG310")
+# clinical <- read.csv("TCGA-BRCA/data_clinical_patient.txt", sep = "\t", header = TRUE, skip = 4)
+# mutations <- read.csv("TCGA-BRCA/data_mutations.txt", sep = "\t", header = TRUE)
+# rnaseq <- read.csv("TCGA-BRCA/RNAseq_BRCA.csv", header = TRUE)
+clinical <- read.csv("data_clinical_patient.txt", sep = "\t", header = TRUE, skip = 4)
+mutations <- read.csv("data_mutations.txt", sep = "\t", header = TRUE)
+rnaseq <- read.csv("RNAseq_BRCA.csv", header = TRUE)
 ```
 
 
@@ -549,8 +577,1270 @@ mean(glm.pred == logit_df$Stage)
 ## Table  2.2, Logistic Regression
 
 
-# --- Investigation 3: ____ ---
+# --- Investigation 3: Relationship Between gene expression and BRCA molecular subtype ---
 
+#Data cleaning:
+```{r}
+
+RNAseq_BRCA.data.mut <- rnaseq
+mutations.data.mut <- mutations
+
+rownames(RNAseq_BRCA.data.mut) <- rnaseq$X
+
+u1 <- unique(clinical$PATIENT_ID)
+
+mutations.data.mut$Tumor_Sample_Barcode <- substr(mutations.data.mut$Tumor_Sample_Barcode, start = 1, stop = 12)
+
+u2 <- unique(mutations.data.mut$Tumor_Sample_Barcode)
+
+
+RNAseq_BRCA.data.mut <- RNAseq_BRCA.data.mut[2:length(RNAseq_BRCA.data.mut)]
+
+colnames(RNAseq_BRCA.data.mut) <- substr(colnames(RNAseq_BRCA.data.mut), start = 1, stop = 12)
+
+colnames(RNAseq_BRCA.data.mut) <- gsub("[$.]", "-", colnames(RNAseq_BRCA.data.mut))
+
+u3 <- unique(substr(colnames(RNAseq_BRCA.data.mut), start = 1, stop = 12))
+
+#u3 has an extra trash value "X" at the start
+#we will try to replicate the formatting of u1 in u2 and u3
+
+u12 <- intersect(u1, u2)
+u123 <- intersect(u3, u12)
+#u123 is our vector which contains unique patient IDs that appear in u1, u2 and u3
+
+#now that everything has been formatted properly 
+#we can find the intersection of the datasets with the unique 
+#identifiers, i.e., only keep the values when a identifier
+#appears in all 3 datasets
+
+clinical.data.mut <- clinical[clinical$PATIENT_ID %in% u123,]
+RNAseq_BRCA.data.mut <- RNAseq_BRCA.data.mut[,colnames(RNAseq_BRCA.data.mut) %in% u123]
+mutations.data.mut <- mutations.data.mut[mutations.data.mut$Tumor_Sample_Barcode %in% u123,]
+
+
+```
+
+#Plotting mutation counts by subtype
+```{r}
+
+df <- data.frame(PATIENT_ID = clinical.data.mut$PATIENT_ID, SUBTYPE = clinical.data.mut$SUBTYPE)
+
+#Adding subtype data from clinical to mutations data
+mutations.data.mut$SUBTYPE <- ""
+df_temp <- df[df$SUBTYPE == "BRCA_LumA", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumA"
+df_temp <- df[df$SUBTYPE == "BRCA_LumB", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumB"
+df_temp <- df[df$SUBTYPE == "BRCA_Her2", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Her2"
+df_temp <- df[df$SUBTYPE == "BRCA_Normal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Normal"
+df_temp <- df[df$SUBTYPE == "BRCA_Basal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Basal"
+df_temp <- df[df$SUBTYPE == "", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- ""
+
+
+mutations.data.mut$Hugo_Symbol[mutations.data.mut$Hugo_Symbol == "MKI67"]
+
+
+counter <- data.frame(Hugo_Symbol = mutations.data.mut$Hugo_Symbol, SUBTYPE = mutations.data.mut$SUBTYPE)
+
+counter$SUBTYPE <- str_sub(counter$SUBTYPE, 6, -1)
+counter <- counter[counter$SUBTYPE != "",]
+
+table(counter$SUBTYPE)
+
+#NORMALIZING DATA
+#Some types appear much more frequently than others
+#We have to scale the counts accordingly
+sBasal <- 1/0.2062
+sLumA <- 1/0.4351
+sLumB <- 1/0.1797
+sHer2 <- 1/0.1541
+sNormal <- 1/0.0249
+
+#plotting
+counter_table <- as.data.frame(table(counter[counter$Hugo_Symbol == "MKI67",]))
+counter_table$Freq <- counter_table$Freq*c(sBasal, sHer2, sLumA, sLumB, sNormal)
+pMKI67 <- ggplot(counter_table, aes(x = SUBTYPE, y = Freq)) + geom_col(position = "dodge", fill = "#EB9109") + labs(title = "MKI67 (Ki67)") + theme(axis.title.x = element_blank(), axis.title.y = element_blank(), panel.background = element_rect(fill = "#F5F8FF"))
+
+counter_table <- as.data.frame(table(counter[counter$Hugo_Symbol == "ERBB2",]))
+counter_table$Freq <- counter_table$Freq*c(sBasal, sHer2, sLumA, sLumB, sNormal)
+pERBB2 <- ggplot(counter_table, aes(x = SUBTYPE, y = Freq)) + geom_col(position = "dodge", fill = "#FF7833") + labs(title = "ERBB2 (Her2)") + theme(axis.title.x = element_blank(), axis.title.y = element_blank(), panel.background = element_rect(fill = "#F5F8FF"))
+
+counter_table <- as.data.frame(table(counter[counter$Hugo_Symbol == "ESR1",]))
+counter_table$Freq <- counter_table$Freq*c(sBasal, sHer2, sLumA, sLumB)
+pESR1 <- ggplot(counter_table, aes(x = SUBTYPE, y = Freq)) + geom_col(position = "dodge", fill = "#0C0A9E") + labs(title = "ESR1 (ER)") + theme(axis.title.x = element_blank(), axis.title.y = element_blank(), panel.background = element_rect(fill = "#F5F8FF"))
+
+counter_table <- as.data.frame(table(counter[counter$Hugo_Symbol == "PGR",]))
+counter_table$Freq <- counter_table$Freq*c(sBasal, sLumA, sLumB)
+pPGR <- ggplot(counter_table, aes(x = SUBTYPE, y = Freq)) + geom_col(position = "dodge", fill = "#8208D5") + labs(title = "PGR (PR)") + theme(axis.title.x = element_blank(), axis.title.y = element_blank(), panel.background = element_rect(fill = "#F5F8FF"))
+
+
+
+(pESR1 + pPGR)/(pMKI67 + pERBB2)
+
+```
+##Fig 3.1 Mutation Counts by Subtype
+
+
+# Lab 10 Deliverable
+
+
+```{r, out.width = "97%", fig.align = "center"}
+##
+###### params:
+
+a <- 5000 #1 to 60660, n. of genes
+sizea <- FALSE #do we restrict n. of genes? yes = TRUE, no = FALSE
+b <- 500 #1 to 1006, n. of cases
+sizeb <- FALSE #do we restrict n. of patients? yes = TRUE, no = FALSE
+gene <- "Her2" 
+geneselect <- TRUE #do we want to select a singular gene or not?
+
+######
+##
+
+
+png_plotter_BMEG310 <- function(a = 1000, sizea = FALSE, b = 500, sizeb = FALSE, gene = "LumA", geneselect = FALSE){
+  
+
+
+mutations.data.mut$SUBTYPE <- ""
+
+df_temp <- df[df$SUBTYPE == "BRCA_LumA", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumA"
+
+df_temp <- df[df$SUBTYPE == "BRCA_LumB", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumB"
+df_temp <- df[df$SUBTYPE == "BRCA_Her2", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Her2"
+df_temp <- df[df$SUBTYPE == "BRCA_Normal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Normal"
+df_temp <- df[df$SUBTYPE == "BRCA_Basal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Basal"
+df_temp <- df[df$SUBTYPE == "", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- ""
+
+counter <- data.frame(SUBTYPE = mutations.data.mut$SUBTYPE, Tumor_Sample_Barcode = mutations.data.mut$Tumor_Sample_Barcode)
+
+counter$SUBTYPE <- str_sub(counter$SUBTYPE, 6, -1)
+
+#df$SUBTYPE <- str_sub(df$SUBTYPE, 6, -1)
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut
+
+rown <- data.frame(Hugo_Symbol = mutations.data.mut$Hugo_Symbol, Transcript_ID = mutations.data.mut$Transcript_ID)
+length(unique(rown$Hugo_Symbol))
+length(unique(rown$Transcript_ID))
+
+#df <- df[(df$SUBTYPE != "") & !is.na(df$SUBTYPE),]
+
+counter <- counter[counter$Tumor_Sample_Barcode %in% unique(colnames(RNAseq_BRCA.data.mut2)),]
+counter <- unique(counter)
+
+#counter <- counter[(counter$SUBTYPE != "") & !is.na(counter$SUBTYPE),]
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,colnames(RNAseq_BRCA.data.mut2) %in% counter$Tumor_Sample_Barcode]
+
+
+colData_pre <- data.frame(condition = counter$SUBTYPE)
+rownames(colData_pre) <- counter$Tumor_Sample_Barcode
+
+
+length(unique(colnames(RNAseq_BRCA.data.mut)))
+length(colnames(RNAseq_BRCA.data.mut))
+
+
+#################### PART 2
+
+
+
+
+
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut[,colnames(RNAseq_BRCA.data.mut) %in% counter$Tumor_Sample_Barcode]
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,!duplicated(colnames(RNAseq_BRCA.data.mut2))]
+#RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,order(rownames(colData_pre))]
+
+#colData_pre <- data.frame(names = rownames(colData_pre), condition = colData_pre$condition)
+#rownames(colData_pre) <- colData_pre$names
+
+
+
+
+reference_order <- rownames(colData_pre)
+
+ordered_matrix <- RNAseq_BRCA.data.mut2[, match(reference_order, colnames(RNAseq_BRCA.data.mut2))]
+colnames(ordered_matrix) <- reference_order # Assign the reference names to the result
+
+print("Matrix 2 reordered to match Matrix 1's columns:")
+#print(ordered_matrix)
+# Notice that columns C and B are filled with NA because they were missing in the original matrix
+
+temp_colData <- as.data.frame(t(data.frame(condition = colData_pre)))
+colnames(temp_colData) <- rownames(colData_pre)
+
+sum(colnames(temp_colData) == colnames(ordered_matrix))
+
+#ordered_matrix <- rbind(temp_colData, ordered_matrix)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#filtering our matrix FOR OUR SUBTYPE OF CHOICE!!!!!!!!!
+if(geneselect){
+ordered_matrix <- ordered_matrix[,colData_pre$condition != "" & !is.na(colData_pre$condition) & ((colData_pre$condition == "Normal")
+                  | (colData_pre$condition == gene))]
+                  #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  #LEVER OF SYSTEM
+
+names <- rownames(colData_pre)
+boolvec <- (colData_pre$condition != "" & !is.na(colData_pre$condition) & ((colData_pre$condition == "Normal") 
+                  | (colData_pre$condition == gene)))
+                  #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  #LEVER OF SYSTEM
+
+colData_pre <- colData_pre[colData_pre$condition != "" & !is.na(colData_pre$condition) & ((colData_pre$condition == "Normal")
+                  | colData_pre$condition == gene),]
+                  #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  #LEVER OF SYSTEM
+
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[boolvec]
+}
+if(!geneselect){
+ordered_matrix <- ordered_matrix[,colData_pre$condition != "" & !is.na(colData_pre$condition)]
+
+names <- rownames(colData_pre)
+boolvec <- (colData_pre$condition != "" & !is.na(colData_pre$condition))
+
+colData_pre <- colData_pre[colData_pre$condition != "" & !is.na(colData_pre$condition),]
+
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[boolvec]
+}
+
+
+#filtering our matrix to adjust for our desired size
+if(sizea | sizeb){
+  
+ifelse(sizea, ordered_matrix <- ordered_matrix[1:a,1:b], ordered_matrix <- ordered_matrix[,1:b])
+
+names <- rownames(colData_pre)
+colData_pre <- colData_pre[1:b,]
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[1:b]
+  
+}
+#this is nice because some commands like DESeq() and rlog() take a long time to run
+#and testing is faster with smaller datasets
+
+
+
+#filtering out zero-rows and columns
+ordered_matrix <- ordered_matrix[,colSums(ordered_matrix) != 0]
+ordered_matrix <- ordered_matrix[rowSums(as.data.frame(ordered_matrix)) != 0,]
+
+
+
+#loading correct data into Lab10 format
+colData <- colData_pre
+countData <- ordered_matrix
+
+
+
+##############################
+cat("DESeq and results")
+
+
+#DESeq and results
+
+
+
+
+dds = DESeqDataSetFromMatrix(countData =countData,
+                              colData=colData,
+                              design=~condition)
+
+
+
+dds = DESeq(dds)
+
+res <- results(dds)
+
+
+
+
+############################################
+cat("Volcano plot")
+
+
+
+# Function 1: Prepare DESeq2 results for plotting
+prepare_res_for_plot <- function(res) {
+  # Convert DESeqResults object to data.frame
+  res_df <- as.data.frame(res)
+
+  # Add rownames as a gene column (optional, adjust based on dataset)
+  res_df$hgnc_symbol <- rownames(res_df)
+
+  return(res_df)
+}
+
+# Prepare the results for the plot
+res_df <- prepare_res_for_plot(res)
+
+# Function 2: Volcano plot function
+volcplot <- function(data, padj_threshold = 0.05, log2Fold_threshold = 1, plot_title = 'Volcano Plot', plot_subtitle = NULL) {
+  # Set the fold-change thresholds
+  neg_log2fc <- -log2Fold_threshold
+  pos_log2fc <- log2Fold_threshold
+
+  # Replace NA values
+  data$padj[is.na(data$padj)] <- 1
+  data$log2FoldChange[is.na(data$log2FoldChange)] <- 0
+
+  # Add log2fc_threshold column
+  data$log2fc_threshold <- ifelse(
+    data$log2FoldChange >= pos_log2fc & data$padj <= padj_threshold, 'up',
+    ifelse(data$log2FoldChange <= neg_log2fc & data$padj <= padj_threshold, 'down', 'ns')
+  )
+
+
+  # Count up, down, and unchanged genes
+  up_genes <- sum(data$log2fc_threshold == 'up')
+  down_genes <- sum(data$log2fc_threshold == 'down')
+  unchanged_genes <- sum(data$log2fc_threshold == 'ns')
+
+  # Generate legend labels
+  legend_labels <- c(
+    paste0('Up: ', up_genes),
+    paste0('Not significant: ', unchanged_genes),
+    paste0('Down: ', down_genes)
+  )
+
+  # Calculate x-axis limits
+  x_axis_limits <- ceiling(max(abs(data$log2FoldChange)))
+
+  # Define plot colors
+  plot_colors <- c(
+    'up' = 'firebrick1',
+    'ns' = 'gray',
+    'down' = 'dodgerblue1'
+  )
+
+  # Create the plot
+  plot <- ggplot(data) +
+    geom_point(
+      aes(x = log2FoldChange, y = -log10(padj), color = log2fc_threshold),
+      alpha = 0.25,
+      size = 0.75
+    ) +
+    geom_vline(xintercept = c(neg_log2fc, pos_log2fc), linetype = 'dashed') +
+    geom_hline(yintercept = -log10(padj_threshold), linetype = 'dashed') +
+    scale_x_continuous(
+      'log2(FC)',
+      limits = c(-x_axis_limits, x_axis_limits)
+    ) +
+    scale_color_manual(
+      values = plot_colors,
+      labels = legend_labels
+    ) +
+    labs(
+      color = paste('log2Fold:', log2Fold_threshold, ' , padj ≤', padj_threshold),
+      title = plot_title,
+      subtitle = plot_subtitle
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      aspect.ratio = 1,
+      axis.text = element_text(color = 'black'),
+      legend.margin = margin(0, 0, 0, 0),
+      legend.box.margin = margin(0, 0, 0, 0),
+      legend.spacing.x = unit(0.2, 'cm')
+    )
+  
+  return(plot)
+}
+
+
+volcplot(
+  data = res_df,
+  padj_threshold = 0.05,
+  log2Fold_threshold = 1,
+  plot_title = "Volcano Plot for DESeq2 Results",
+  plot_subtitle = "Comparison: hoxa1_kd vs control_sirna"
+)
+
+
+
+#########################
+cat("Lab part 2\n
+Evan added a bit of code here to make it work with the new dataset")
+
+
+####Evan added code:
+
+res_rowname_strings <- sub(paste0("\\.", ".*"), "\\.", row.names(res))
+res_rowname_strings <- str_sub(res_rowname_strings, start = 1, end = -2)
+
+
+res$symbol = mapIds(org.Hs.eg.db,
+                    keys=res_rowname_strings, 
+                    column="SYMBOL",
+                    keytype="ENSEMBL",
+                    multiVals="first")
+
+res$entrez = mapIds(org.Hs.eg.db,
+                    keys=res_rowname_strings, 
+                    column="ENTREZID",
+                    keytype="ENSEMBL",
+                    multiVals="first")
+
+res$name =   mapIds(org.Hs.eg.db,
+                    keys=res_rowname_strings, 
+                    column="GENENAME",
+                    keytype="ENSEMBL",
+                    multiVals="first")
+
+
+
+
+
+
+data(kegg.sets.hs)
+data(sigmet.idx.hs)
+
+# Focus on signaling and metabolic pathways only
+kegg.sets.hs = kegg.sets.hs[sigmet.idx.hs]
+
+# Examine the first 3 pathways
+head(kegg.sets.hs, 3)
+
+foldchanges = res$log2FoldChange
+names(foldchanges) = res$entrez
+head(foldchanges)
+
+# Get the results
+keggres = gage(foldchanges, gsets=kegg.sets.hs)
+
+attributes(keggres)
+
+# Look at the first few down (less) pathways
+head(keggres$less)
+
+# Adding our data to the KEGG pathway png
+pathview(gene.data=foldchanges, pathway.id="hsa05224", out.suffix = gene) #Evan added: BRCA-specific pathway
+
+
+}
+
+
+
+```
+ 
+#Calculating results for each subtype by calling function
+```{r, out.width = "97%", fig.align = "center"}
+
+png_plotter_BMEG310(gene = "LumA", geneselect = TRUE)
+knitr::include_graphics("hsa05224.LumA.png")
+
+
+```
+##Fig 3.2: pathway analysis of LumA
+
+```{r, out.width = "97%", fig.align = "center"}
+png_plotter_BMEG310(gene = "LumB", geneselect = TRUE)
+knitr::include_graphics("hsa05224.LumB.png")
+```
+##Fig 3.3: pathway analysis of LumB
+
+
+```{r, out.width = "97%", fig.align = "center"}
+png_plotter_BMEG310(gene = "Her2", geneselect = TRUE)
+knitr::include_graphics("hsa05224.Her2.png")
+```
+##Fig 3.4: pathway analysis of Her2
+
+
+```{r, out.width = "97%", fig.align = "center"}
+png_plotter_BMEG310(gene = "Basal", geneselect = TRUE)
+# knitr::include_graphics("hsa05224.Basal.png")
+
+#calculating system runtime
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+print("runtime: \n")
+time.taken
+
+```
+add fig 3.5 stuff
+include knitr::include_graphics thingy
+Move end.time stuff to end of code
+
+
+
+
+
+#Testing validity of upregulation
+```{r}
+#This code block exists to test whether "upregulation" as labelled by DESeq is actually upregulation
+
+
+##
+###### params:
+
+a <- 5000 #1 to 60660, n. of genes
+sizea <- FALSE #do we restrict n. of genes? yes = TRUE, no = FALSE
+b <- 500 #1 to 1006, n. of cases
+sizeb <- FALSE #do we restrict n. of patients? yes = TRUE, no = FALSE
+Gene <- "LumA" 
+geneselect <- TRUE #do we want to select a singular gene or not?
+
+######
+##
+
+subtype_boxplotter_BMEG310 <- function(gene = "LumA", geneselect = TRUE, a = 5000, sizea = FALSE, b = 500, sizeb = FALSE){
+
+df <- data.frame(PATIENT_ID = clinical.data.mut$PATIENT_ID, SUBTYPE = clinical.data.mut$SUBTYPE)
+mutations.data.mut$SUBTYPE <- ""
+
+df_temp <- df[df$SUBTYPE == "BRCA_LumA", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumA"
+
+df_temp <- df[df$SUBTYPE == "BRCA_LumB", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_LumB"
+
+df_temp <- df[df$SUBTYPE == "BRCA_Her2", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Her2"
+
+df_temp <- df[df$SUBTYPE == "BRCA_Normal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Normal"
+
+df_temp <- df[df$SUBTYPE == "BRCA_Basal", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- "BRCA_Basal"
+
+df_temp <- df[df$SUBTYPE == "", ]
+mutations.data.mut$SUBTYPE[mutations.data.mut$Tumor_Sample_Barcode %in% df_temp$PATIENT_ID] <- ""
+
+counter <- data.frame(SUBTYPE = mutations.data.mut$SUBTYPE, Tumor_Sample_Barcode = mutations.data.mut$Tumor_Sample_Barcode)
+
+counter$SUBTYPE <- str_sub(counter$SUBTYPE, 6, -1)
+
+
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut
+
+rown <- data.frame(Hugo_Symbol = mutations.data.mut$Hugo_Symbol, Transcript_ID = mutations.data.mut$Transcript_ID)
+length(unique(rown$Hugo_Symbol))
+length(unique(rown$Transcript_ID))
+
+
+
+counter <- counter[counter$Tumor_Sample_Barcode %in% unique(colnames(RNAseq_BRCA.data.mut2)),]
+counter <- unique(counter)
+
+
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,colnames(RNAseq_BRCA.data.mut2) %in% counter$Tumor_Sample_Barcode]
+
+
+colData_pre <- data.frame(condition = counter$SUBTYPE)
+rownames(colData_pre) <- counter$Tumor_Sample_Barcode
+
+
+length(unique(colnames(RNAseq_BRCA.data.mut)))
+length(colnames(RNAseq_BRCA.data.mut))
+
+
+#################### PART 2
+
+
+
+
+
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut[,colnames(RNAseq_BRCA.data.mut) %in% counter$Tumor_Sample_Barcode]
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,!duplicated(colnames(RNAseq_BRCA.data.mut2))]
+
+
+
+reference_order <- rownames(colData_pre)
+
+ordered_matrix <- RNAseq_BRCA.data.mut2[, match(reference_order, colnames(RNAseq_BRCA.data.mut2))]
+colnames(ordered_matrix) <- reference_order # Assign the reference names to the result
+
+#print("Matrix 2 reordered to match Matrix 1's columns:")
+# Notice that columns C and B are filled with NA because they were missing in the original matrix
+
+temp_colData <- as.data.frame(t(data.frame(condition = colData_pre)))
+colnames(temp_colData) <- rownames(colData_pre)
+
+sum(colnames(temp_colData) == colnames(ordered_matrix))
+
+
+#filtering our matrix FOR OUR SUBTYPE OF CHOICE!!!!!!!!!
+if(geneselect){
+ordered_matrix <- ordered_matrix[,colData_pre$condition != "" & !is.na(colData_pre$condition) & ((colData_pre$condition == gene))]
+                  #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  #LEVER OF SYSTEM
+
+names <- rownames(colData_pre)
+boolvec <- (colData_pre$condition != "" & !is.na(colData_pre$condition) & ((colData_pre$condition == gene)))
+                  #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  #LEVER OF SYSTEM
+
+colData_pre <- colData_pre[colData_pre$condition != "" & !is.na(colData_pre$condition) & (colData_pre$condition == gene),]
+                  #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  #LEVER OF SYSTEM
+
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[boolvec]
+}
+if(!geneselect){
+ordered_matrix <- ordered_matrix[,colData_pre$condition != "" & !is.na(colData_pre$condition)]
+
+names <- rownames(colData_pre)
+boolvec <- (colData_pre$condition != "" & !is.na(colData_pre$condition))
+
+colData_pre <- colData_pre[colData_pre$condition != "" & !is.na(colData_pre$condition),]
+
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[boolvec]
+}
+
+
+#filtering our matrix to adjust for our desired size
+if(sizea | sizeb){
+  
+ifelse(sizea, ordered_matrix <- ordered_matrix[1:a,1:b], ordered_matrix <- ordered_matrix[,1:b])
+
+names <- rownames(colData_pre)
+colData_pre <- colData_pre[1:b,]
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[1:b]
+  
+}
+
+
+
+#filtering out zero-rows and columns
+ordered_matrix <- ordered_matrix[,colSums(ordered_matrix) != 0]
+ordered_matrix <- ordered_matrix[rowSums(as.data.frame(ordered_matrix)) != 0,]
+
+
+
+
+Xvec <- sub(paste0("\\.", ".*"), "\\.", row.names(ordered_matrix))
+Xvec <- str_sub(Xvec, start = 1, end = -2)
+
+boxdata <- data.frame(expression = t(ordered_matrix[grepl(
+  "ENSG00000091831", Xvec),]))
+
+box_output <- ggplot(boxdata, aes(y = log10(ENSG00000091831.24+1))) + geom_boxplot() + labs(y = "log10(ESR1 + 1)", title = gene) + ylim(1,6)
+
+return(box_output)
+}
+
+box_LumA <- subtype_boxplotter_BMEG310(gene = "LumA")
+box_LumB <- subtype_boxplotter_BMEG310(gene = "LumB")
+box_Her2 <- subtype_boxplotter_BMEG310(gene = "Her2")
+box_Basal <- subtype_boxplotter_BMEG310(gene = "Basal")
+
+box_LumA + box_LumB + box_Her2 + box_Basal
+
+
+```
+## Fig 3.6: Expression of Estrogen Receptor by subtype
+As we can see, the medians of each subtype are different.
+This investigation was looking at ER
+We can see that LumA and LumB are relatively upregulated in ER,
+As they should be. Since KEGG considers these as "downregulated",
+We can see the signs were flipped during DESeq analysis.
 
 
 # --- Investigation 4: Gene expression biomarkers predicting tumor recurrence
+
+
+
+# --- Investigation 6: Histotype and Significant Gene Predictions
+#Data cleaning:
+```{r}
+
+RNAseq_BRCA.data.mut <- rnaseq
+mutations.data.mut <- mutations
+
+rownames(RNAseq_BRCA.data.mut) <- rnaseq$X
+
+u1 <- unique(clinical$PATIENT_ID)
+
+mutations.data.mut$Tumor_Sample_Barcode <- substr(mutations.data.mut$Tumor_Sample_Barcode, start = 1, stop = 12)
+
+u2 <- unique(mutations.data.mut$Tumor_Sample_Barcode)
+
+
+RNAseq_BRCA.data.mut <- RNAseq_BRCA.data.mut[2:length(RNAseq_BRCA.data.mut)]
+
+colnames(RNAseq_BRCA.data.mut) <- substr(colnames(RNAseq_BRCA.data.mut), start = 1, stop = 12)
+
+colnames(RNAseq_BRCA.data.mut) <- gsub("[$.]", "-", colnames(RNAseq_BRCA.data.mut))
+
+u3 <- unique(substr(colnames(RNAseq_BRCA.data.mut), start = 1, stop = 12))
+
+#u3 has an extra trash value "X" at the start
+#we will try to replicate the formatting of u1 in u2 and u3
+
+u12 <- intersect(u1, u2)
+u123 <- intersect(u3, u12)
+#u123 is our vector which contains unique patient IDs that appear in u1, u2 and u3
+
+#now that everything has been formatted properly 
+#we can find the intersection of the datasets with the unique 
+#identifiers, i.e., only keep the values when a identifier
+#appears in all 3 datasets
+
+clinical.data.mut <- clinical[clinical$PATIENT_ID %in% u123,]
+RNAseq_BRCA.data.mut <- RNAseq_BRCA.data.mut[,colnames(RNAseq_BRCA.data.mut) %in% u123]
+mutations.data.mut <- mutations.data.mut[mutations.data.mut$Tumor_Sample_Barcode %in% u123,]
+
+
+```
+
+
+#more powerful matrix code SORTED DATA for synonymous mutations
+```{r}
+#Synonymous:
+#"Silent", "5'UTR", "3'UTR", "Splice_Region"
+#Everything else is non-synonymous
+condvec <- grepl("Silent|5'UTR|3'UTR|Splice_Region", mutations.data.mut$Variant_Classification)
+
+
+#Intronic
+#Include 3' and 5'flank
+#Translation_Start_Site
+unique(mutations.data.mut$Variant_Classification[!condvec])
+
+melted_counts_mat <- as.data.frame(table(mutations.data.mut$Tumor_Sample_Barcode[!condvec], mutations.data.mut$Hugo_Symbol[!condvec]))
+
+#length(mutations.data.mut$Tumor_Sample_Barcode)
+
+library(reshape2)
+counts_mat <- dcast(melted_counts_mat, Var2 ~ Var1, value.var = "Freq")
+
+
+counts_mat_rowsums <- rowSums(counts_mat[,2:length(counts_mat[1,])])
+
+counts_mat_sums <- data.frame(name = counts_mat$Var2, sums = counts_mat_rowsums)
+
+sorted_counts_mat_sums <- counts_mat_sums[order(-counts_mat_sums$sums),]
+
+sorted_counts_mat_sums$name[1:20]
+
+
+sorted_counts_mat <- counts_mat[counts_mat$Var2 %in% sorted_counts_mat_sums$name,]
+sorted_counts_mat_mini <- counts_mat[counts_mat$Var2 %in% sorted_counts_mat_sums$name[1:20],]
+# pheatmap(
+#   scale(log10(sorted_counts_mat_mini[1:20, 2:length(colnames(sorted_counts_mat))] + 1)),
+#   cluster_rows = FALSE, cluster_cols = FALSE)
+
+
+```
+
+#USING PCA TO FIND TOP XX GENES
+```{r}
+
+
+length(sorted_counts_mat_sums$name[sorted_counts_mat_sums$sums >= 10])
+sorted_counts_mat$Var2 <- as.character(sorted_counts_mat$Var2)
+#sorted_counts_mat[is.na(sorted_counts_mat)] <- 0
+#there are 17545 genes
+
+#but only 2162 of them are expressed 10 or more times
+shrunk_counts_mat <- sorted_counts_mat[sorted_counts_mat_sums$sums >= 55, 2:length(colnames(sorted_counts_mat))]
+#sorted_counts_mat[sorted_counts_mat_sums$sums >= 10, 2:length(colnames(sorted_counts_mat))]
+cols_to_keep <- colSums(shrunk_counts_mat, na.rm = TRUE) != 0
+shrunk_counts_mat <- shrunk_counts_mat[,cols_to_keep]
+counts_mat_PCA <- prcomp(t(shrunk_counts_mat), center = TRUE, scale. = TRUE)
+
+#shrunk_counts_mat[is.na(shrunk_counts_mat)] <- 0
+
+
+################################### Results & Graph
+
+#counts_mat_PCA$x[1,]
+#we have 1009 PCs
+
+summary_PCA <- summary(counts_mat_PCA)
+cumulative_variance <- summary_PCA$importance[3, ]
+#importance contains 3 subsets: the standard deviations themselves (1), the proportion of variance (2)
+#and the cumulative proportion of variance (3)
+ret <- which(cumulative_variance >= 0.90)[1]
+#we find PC1 to PC829 account for 90% of variance. This is strange
+
+#counts_mat_PCA$x[,1:829]
+
+#summary_PCA
+#length(counts_mat_PCA$rotation[,1])
+length(counts_mat_PCA$sdev) # tells us n. of PCs
+
+
+#summary_PCA$importance[2,]
+
+#FOR REGULAR GRAPH:
+# drows <- dist(scale(log10(counts_mat_PCA$x[,1:as.numeric(ret)] + 1)), method = "euclidean")
+# dcols <- dist(t(scale(log10(counts_mat_PCA$x[,1:as.numeric(ret)] + 1))), method = "euclidean")
+# 
+# pheatmap(scale(log10(counts_mat_PCA$x[,1:as.numeric(ret)] + 1)), clustering_distance_cols = dcols, clustering_distance_rows = drows)
+
+#FOR PRETTIER GRAPH
+drows <- dist(t(scale(log10(counts_mat_PCA$x[,1:as.numeric(ret)] + 1))), method = "manhattan")
+dcols <- dist(scale(log10(counts_mat_PCA$x[,1:as.numeric(ret)] + 1)), method = "manhattan")
+
+hc_cols <- hclust(dcols, method = "ward.D2")
+cols_clusters <- cutree(hc_cols, k = 3)
+unique(cols_clusters)
+c1 <- sum(cols_clusters == 1)
+c2 <- sum(cols_clusters == 2)
+c3 <- sum(cols_clusters == 3)
+c1/(c1 + c2 + c3)
+c2/(c1 + c2 + c3)
+c3/(c1 + c2 + c3)
+
+# pheatmap(t(scale(log10(counts_mat_PCA$x[,1:as.numeric(ret)] + 1))), clustering_distance_cols = dcols, clustering_distance_rows = drows, show_colnames = FALSE)
+```
+
+#Running PCA on RNA expression matrix
+```{r}
+
+sigvec <- c("PIK3CA", "PTEN", "AKT1", "TP53", "GATA3", "CDH1", "RB1", "MLL3", "MAP3K1", "CDKN1B", "TBX3", "RUNX1", "CBFB", "AFF2", "PIK3R1", "PTPN22", "NF1", "SF3B1", "CCND3")
+
+    #BiocManager::install("biomaRt")
+    library(biomaRt)
+
+
+# Connect to the Ensembl human database
+    ensembl <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl")
+
+    ensembl_ids <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"),
+                         filters = "hgnc_symbol",
+                         values = sigvec,
+                         mart = ensembl)
+
+    rown <- sub(paste0("\\.", ".*"), "\\.", rownames(RNAseq_BRCA.data.mut))
+rown <- str_sub(rown, start = 1, end = -2)
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut[rown %in% ensembl_ids$ensembl_gene_id,]
+
+
+
+
+
+RNA_PCA <- prcomp(t(RNAseq_BRCA.data.mut[rowSums(RNAseq_BRCA.data.mut) != 0,]), center = TRUE, scale. = TRUE)
+```
+
+
+```{r}
+summary_RNA_PCA <- summary(RNA_PCA)
+cumulative_RNA_variance <- summary_RNA_PCA$importance[3, ]
+#importance contains 3 subsets: the standard deviations themselves (1), the proportion of variance (2)
+#and the cumulative proportion of variance (3)
+ret_RNA <- which(cumulative_RNA_variance >= 0.90)[1]
+#we find PC1 to PC829 account for 90% of variance. This is strange
+
+#RNA_PCA$x[,1:829]
+
+#summary_PCA
+#length(RNA_PCA$rotation[,1])
+length(RNA_PCA$sdev) # tells us n. of PCs
+
+
+#summary_PCA$importance[2,]
+
+
+#FOR PRETTIER GRAPH
+drows_RNA <- dist(t(scale(log10(RNA_PCA$x[,1:as.numeric(ret_RNA)] + 1))), method = "manhattan")
+dcols_RNA <- dist(scale(log10(RNA_PCA$x[,1:as.numeric(ret_RNA)] + 1)), method = "manhattan")
+
+hc_cols_RNA <- hclust(dcols, method = "ward.D2")
+cols_clusters <- cutree(hc_cols_RNA, k = 3)
+unique(cols_clusters)
+c1 <- sum(cols_clusters == 1)
+c2 <- sum(cols_clusters == 2)
+c3 <- sum(cols_clusters == 3)
+c1/(c1 + c2 + c3)
+c2/(c1 + c2 + c3)
+c3/(c1 + c2 + c3)
+
+pheatmap(t(scale(log10(RNA_PCA$x[,1:as.numeric(ret_RNA)] + 1))), clustering_distance_cols = dcols_RNA, clustering_distance_rows = drows_RNA, show_colnames = FALSE, show_rownames = FALSE)
+```
+##Fig 6.1: Heatmap of PCA-transformed RNA Expression matrix
+
+
+#Proper Investigation 6
+```{r}
+
+#Factors we are including:
+# A. Age
+# B. Stage
+# C. Top 8 genes mutation counts
+# D. Radiation Therapy
+# E. Metastatic Status
+
+
+#Steps of analysis:
+# 1. Extract data into mutable files
+# 2. Clean each individual data file (remove null/blanks)
+# 3. Find intersection of patients & genes which exist across all data files
+# 4. Line up each datafile by gene or patient (using order())
+# 5. Combine data
+# 6. Cluster
+
+
+#Step 1: Extracting data
+########################
+clinical.data.mut <- clinical #Age, Stage, 
+                      #Radiation Therapy,
+                      #Metastatic Status
+
+
+#Using Hemanya's code to get the top 20 mutations
+nonsyn_mut <- c(
+  "Missense_Mutation",
+  "Nonsense_Mutation",
+  "Frame_Shift_Del",
+  "Frame_Shift_Ins",
+  "In_Frame_Del",
+  "In_Frame_Ins",
+  "Splice_Site", 
+  "Trannslation_Start_Site", "3'Flank", "5'Flank" )
+
+#head(mutations.data)
+mut_col_needed <- mutations[, c("Hugo_Symbol", "Tumor_Sample_Barcode",
+                                     "Variant_Classification")]
+mut_col_needed$PATIENT_ID <- substr(mut_col_needed$Tumor_Sample_Barcode, 1, 12)
+
+mut_col_needed <- na.omit(mut_col_needed)
+#nonsyn only
+mut_col_needed <- mut_col_needed[mut_col_needed$Variant_Classification 
+                                 %in% nonsyn_mut, ]
+
+mut_cleaned <- mut_col_needed[!duplicated(mut_col_needed[, c("Hugo_Symbol",                                                           "PATIENT_ID")]), ]
+#create the table
+mut_table <- table(mut_col_needed$Hugo_Symbol, mut_col_needed$PATIENT_ID)
+mut_table[mut_table > 0] <- 1
+mut_matrix <- as.matrix(mut_table)
+
+
+mut_count <- rowSums(mut_matrix)
+mut_count_sorted <- sort(mut_count, decreasing = TRUE)
+top20_genes <- head(mut_count_sorted, 20)
+
+
+
+
+
+#Step 2: Cleaning data
+######################
+
+
+clinical.data.mut <- clinical.data.mut[clinical.data.mut$RADIATION_THERAPY == "Yes" | clinical.data.mut$RADIATION_THERAPY == "No", ]
+
+clinical.data.mut <- clinical.data.mut[clinical.data.mut$PATH_M_STAGE == "M0" | clinical.data.mut$PATH_M_STAGE == "M1", ]
+
+clinical.data.mut <- clinical.data.mut[clinical.data.mut$RADIATION_THERAPY == "Yes" | clinical.data.mut$RADIATION_THERAPY == "No", ]
+
+clinical.data.mut <- clinical.data.mut[!is.na(clinical.data.mut$AGE), ]
+
+#unique(clinical.data.mut$AGE)
+
+clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE[clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE == "STAGE IA" | clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE == "STAGE IB"] <- "STAGE I"
+clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE[clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE == "STAGE IIA" | clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE == "STAGE IIB"] <- "STAGE II"
+clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE[clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE == "STAGE IIIA" | clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE == "STAGE IIIB" | clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE == "STAGE IIIC"] <- "STAGE III"
+
+clinical.data.mut <- clinical.data.mut[(clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE != "") & (!is.na(clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE))& (clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE != "STAGE X"),]
+
+#unique(clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE)
+
+melted_counts_mat <- as.data.frame(t(mut_matrix))
+counts_mat <- dcast(melted_counts_mat, Var2 ~ Var1, value.var = "Freq")
+counts_mat_rowsums <- rowSums(counts_mat[,2:length(counts_mat[1,])])
+counts_mat_sums <- data.frame(name = counts_mat$Var2, sums = counts_mat_rowsums)
+sorted_counts_mat_sums <- counts_mat_sums[order(-counts_mat_sums$sums),]
+sorted_counts_mat_mini <- counts_mat[counts_mat$Var2 %in% sorted_counts_mat_sums$name[1:20],]
+
+
+
+sorted_counts_mat_mini_mut <- sorted_counts_mat_mini
+rownames(sorted_counts_mat_mini_mut) <- sorted_counts_mat_mini_mut$Var2
+
+sorted_counts_mat_mini_mut <- sorted_counts_mat_mini_mut[,2:length(colnames(sorted_counts_mat_mini_mut))]
+sorted_counts_mat_mini_mut <- sorted_counts_mat_mini_mut[,colSums(sorted_counts_mat_mini_mut) > 0]
+
+
+
+
+#Step 3. Find intersection of patients & genes which exist across all data files
+################################################################################
+
+u1 <- unique(clinical.data.mut$PATIENT_ID)
+u2 <- unique(colnames(sorted_counts_mat_mini_mut))
+
+u12 <- intersect(u1, u2)
+
+clinical.data.mut <- clinical.data.mut[clinical.data.mut$PATIENT_ID %in% u12,]
+sorted_counts_mat_mini_mut <- sorted_counts_mat_mini_mut[,colnames(sorted_counts_mat_mini_mut) %in% u12]
+
+
+
+
+#Step 4. Line up each datafile by gene or patient (using order())
+#################################################################
+
+clinical.data.mut <- clinical.data.mut[order(clinical.data.mut$PATIENT_ID),]
+sorted_counts_mat_mini_mut <- sorted_counts_mat_mini_mut[,order(colnames(sorted_counts_mat_mini_mut))]
+sorted_counts_mat_mini_mut <- sorted_counts_mat_mini_mut[,order(clinical.data.mut$PATIENT_ID)]
+clinical.data.mut <- clinical.data.mut[order(clinical.data.mut$PATIENT_ID),]
+
+ifelse(length(colnames(sorted_counts_mat_mini_mut)) ==
+         sum(colnames(sorted_counts_mat_mini_mut) == clinical.data.mut$PATIENT_ID),
+       "Patient IDs lined up properly",
+       "Patient IDs are NOT lined up properly!!!")
+
+
+
+
+#Step 5. Combine data
+#####################
+
+clinical.stats <- t(data.frame(
+  AGE = clinical.data.mut$AGE,
+  AJCC_PATHOLOGIC_TUMOR_STAGE = as.numeric(as.factor(clinical.data.mut$AJCC_PATHOLOGIC_TUMOR_STAGE)),
+  RADIATION_THERAPY = as.numeric(as.factor(clinical.data.mut$RADIATION_THERAPY)), 
+  PATH_M_STAGE = as.numeric(as.factor(clinical.data.mut$PATH_M_STAGE))
+))
+
+colnames(clinical.stats) <- clinical.data.mut$PATIENT_ID
+
+bigmat <- rbind(clinical.stats, sorted_counts_mat_mini_mut)
+
+
+d <- dist(scale(t(bigmat)))
+hc <- hclust(d, method = "ward.D2")
+plot(hc, labels = FALSE)
+
+bigmat_clusters <- cutree(hc, k = 3)
+```
+
+#comparing clustering to true
+```{r}
+
+true.type <- read.delim("Cancer_Type_Detailed.full.txt", header = TRUE)
+
+
+true.type.mut <- true.type
+cols_clusters.mut <- bigmat_clusters
+
+names(cols_clusters.mut) <- gsub("[$.]", "-", names(cols_clusters.mut))
+
+#subsetting the data
+names(cols_clusters.mut) <- substr(names(cols_clusters.mut), start = 1, stop = 12)
+true.type.mut <- true.type.mut[true.type.mut$Patient.ID %in% names(cols_clusters.mut),]
+cols_clusters.mut <- cols_clusters.mut[names(cols_clusters.mut) %in% true.type.mut$Patient.ID]
+
+true.type.mut$FACTOR <- as.numeric(as.factor(true.type.mut$Cancer.Type.Detailed))
+
+true.type.mut$FACTOR <- ifelse(true.type.mut$Cancer.Type.Detailed == "Breast Invasive Ductal Carcinoma", 2, ifelse(true.type.mut$Cancer.Type.Detailed == "Breast Invasive Lobular Carcinoma", 1, ifelse(true.type.mut$Cancer.Type.Detailed == "Breast Invasive Carcinoma (NOS)", 3, 0)))
+
+#reordering the data
+cols_clusters.mut <- cols_clusters.mut[order(names(cols_clusters.mut))]
+true.type.mut <- true.type.mut[order(true.type.mut$Patient.ID),]
+cols_clusters.mut <- cols_clusters.mut[order(true.type.mut$Patient.ID)]
+true.type.mut <- true.type.mut[order(true.type.mut$Patient.ID),]
+
+sum(true.type.mut$Patient.ID == names(cols_clusters.mut))
+length(cols_clusters.mut)
+#if the number of correctly aligned cells
+#equals the number of cells, the 
+#dataset is 100% aligned.
+
+sum(cols_clusters.mut == true.type.mut$FACTOR) / length(cols_clusters.mut)
+#we find 70% of patients have been correctly identified
+```
+
+
+```{r}
+
+##
+###### params:
+
+a <- 500 #1 to 60660, n. of genes
+sizea <- FALSE #do we restrict n. of genes? yes = TRUE, no = FALSE
+b <- 40 #1 to 1006, n. of cases
+sizeb <- FALSE #do we restrict n. of patients? yes = TRUE, no = FALSE
+
+######
+##
+
+
+counter <- data.frame(SUBTYPE = as.factor(bigmat_clusters), Tumor_Sample_Barcode = names(bigmat_clusters))
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut
+
+
+#df <- df[(df$SUBTYPE != "") & !is.na(df$SUBTYPE),]
+
+counter <- counter[counter$Tumor_Sample_Barcode %in% unique(colnames(RNAseq_BRCA.data.mut2)),]
+
+#counter <- counter[(counter$SUBTYPE != "") & !is.na(counter$SUBTYPE),]
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,colnames(RNAseq_BRCA.data.mut2) %in% counter$Tumor_Sample_Barcode]
+
+
+colData_pre <- data.frame(condition = counter$SUBTYPE)
+rownames(colData_pre) <- counter$Tumor_Sample_Barcode
+
+
+length(unique(colnames(RNAseq_BRCA.data.mut)))
+length(colnames(RNAseq_BRCA.data.mut))
+
+
+#################### PART 2
+
+
+
+RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,!duplicated(colnames(RNAseq_BRCA.data.mut2))]
+#RNAseq_BRCA.data.mut2 <- RNAseq_BRCA.data.mut2[,order(rownames(colData_pre))]
+
+#colData_pre <- data.frame(names = rownames(colData_pre), condition = colData_pre$condition)
+#rownames(colData_pre) <- colData_pre$names
+
+
+
+
+reference_order <- rownames(colData_pre)
+
+ordered_matrix <- RNAseq_BRCA.data.mut2[, match(reference_order, colnames(RNAseq_BRCA.data.mut2))]
+colnames(ordered_matrix) <- reference_order # Assign the reference names to the result
+
+
+
+temp_colData <- as.data.frame(t(data.frame(condition = colData_pre)))
+colnames(temp_colData) <- rownames(colData_pre)
+
+ifelse(sum(colnames(temp_colData) == colnames(ordered_matrix)) ==
+length(colnames(ordered_matrix)), 
+"Data has been properly aligned", 
+"Data has NOT been properly aligned!!!")
+
+
+ordered_matrix <- ordered_matrix[,colData_pre$condition != "" & !is.na(colData_pre$condition)]
+
+names <- rownames(colData_pre)
+boolvec <- (colData_pre$condition != "" & !is.na(colData_pre$condition))
+
+colData_pre <- colData_pre[colData_pre$condition != "" & !is.na(colData_pre$condition),]
+
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[boolvec]
+
+
+if(sizea | sizeb){
+  
+ifelse(sizea, ordered_matrix <- ordered_matrix[1:a,1:b], ordered_matrix <- ordered_matrix[,1:b])
+
+names <- rownames(colData_pre)
+colData_pre <- colData_pre[1:b,]
+colData_pre <- data.frame(condition = colData_pre)
+rownames(colData_pre) <- names[1:b]
+  
+}
+
+
+#filtering out zero-rows and columns
+ordered_matrix <- ordered_matrix[,colSums(ordered_matrix) != 0]
+ordered_matrix <- ordered_matrix[rowSums(as.data.frame(ordered_matrix)) != 0,]
+
+
+#loading correct data into Lab10 format
+colData <- colData_pre
+countData <- ordered_matrix
+
+
+```
+
+```{r}
+
+dds = DESeqDataSetFromMatrix(countData =countData,
+                              colData=colData,
+                              design=~condition)
+
+dds = DESeq(dds)
+
+
+
+
+#DDS <- as.data.frame(dds)
+
+res <- results(dds)
+#significant_genes_lfc <- as.data.frame(subset(res, padj < 0.05 & abs(log2FoldChange) > 1))
+significant_genes_lfc <- as.data.frame(res)
+
+count_mat <- counts(dds, normalized = TRUE)[rownames(significant_genes_lfc),]
+
+count_mat_z <- t(apply(count_mat, 1, scale))
+colnames(count_mat_z) <- colnames(count_mat)
+
+
+
+#Heatmap(count_mat_z, show_row_names = FALSE)
+
+rownz <- sub(paste0("\\.", ".*"), "\\.", rownames(count_mat_z))
+rownz <- str_sub(rownz, start = 1, end = -2)
+
+
+
+    ensembl <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl")
+
+        # Retrieve HGNC symbols
+    hgnc_symbols <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"),
+                          filters = "ensembl_gene_id",
+                          values = rownz,
+                          mart = ensembl)
+
+
+
+
+PCA_names <- rownames(counts_mat_PCA$x)
+PCA_names <- substr(PCA_names, start = 1, stop = 12)
+names(top20_genes)
+gene_names <- hgnc_symbols[hgnc_symbols$hgnc_symbol %in% sorted_counts_mat_sums[1:1000,1],]
+
+rownames(sorted_counts_mat)[1:100]
+
+Heatmap(count_mat_z[rownz %in% gene_names$ensembl_gene_id, colnames(count_mat_z) %in% PCA_names])
+```
+##Fig 6.2: Heatmap of significant genes from DESeq and which are in top 1000 mutation counts
+
+
+#Counting total time taken to run
+```{r}
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+print("runtime: \n")
+time.taken
+
+```
